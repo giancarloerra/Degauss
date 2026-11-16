@@ -600,6 +600,44 @@ mod tests {
             "mixing a colour must not make any part of the logo disappear"
         );
 
+        // List markers must render with fonts that have no heart glyph,
+        // including the smallest optional sizes used on the CRT.
+        ui.set_screen(0);
+        ui.set_show_bar(false);
+        ui.set_show_brand(false);
+        ui.set_row_height(24.0);
+        ui.set_list_body_glyph(8.0);
+        ui.set_c_favorite(slint::Color::from_rgb_u8(0xfa, 0, 0xb1));
+        window.set_size(PhysicalSize::new(352, 240));
+        let mut frame = MemorySurface::new(352, 240, PixelFormat::Xrgb8888);
+        let mut present = Presenter::new(frame.geometry(), PresentMode::Direct);
+        for family in ["Tamzen 8", "Roboto Condensed Larger"] {
+            ui.set_list_font_family(family.into());
+            for layout in [0, 2, 4] {
+                ui.set_layout(layout);
+                for favorite in [false, true] {
+                    ui.set_rows(slint::ModelRc::new(slint::VecModel::from(vec![
+                        crate::Row {
+                            title: "Game".into(),
+                            favorite,
+                            ..Default::default()
+                        },
+                    ])));
+                    present.force_repaint(&window);
+                    present.draw(&window, &mut frame).expect("list renders");
+                    assert_eq!(
+                        frame
+                            .bytes()
+                            .as_chunks::<4>()
+                            .0
+                            .contains(&[0xb1, 0, 0xfa, 0xff]),
+                        favorite,
+                        "favourite marker: {family}, layout {layout}",
+                    );
+                }
+            }
+        }
+
         // Rotation is done once, around the complete existing component tree.
         // A horizontal red rule at the top of the logical portrait canvas must
         // become a vertical rule on opposite physical sides for the two TATE

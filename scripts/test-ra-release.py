@@ -54,10 +54,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('DEGAUSS_NATIVE_SCRIPT_EXIT = 42', patch)
         self.assertIn('809893ddb8e3f7f40797579e0ed8178b03d558f8', build)
 
-    def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
+    def test_ra_backend_pins_the_1170_source_archive_not_the_runtime_zip(self):
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()
-        self.assertIn('source_pin=69f1249065f1ff3d04f5f9242355a1d5475170fe\n', build)
-        self.assertIn('archive_sha=81b7bf0289bb3d7aefe478a2209bea073881dac7d3d859e610ede47ddfaf5ffe\n', build)
+        self.assertIn('source_pin=2fcf1f7cf7988c74ff76fc4536a5d1c2d13f9cd3\n', build)
+        self.assertIn('archive_sha=c235a0a33b62556fc289a7bdb328a3b7821789218368ab2b74c7b444062587ec\n', build)
         self.assertIn('cacert-2026-11-05.pem', build)
         self.assertIn('ca_sha=427c064216761a1e72a8b30f0d954d08cb6e4435a82091fb865afd20c8497285\n', build)
         self.assertIn('patch --fuzz=0', build)

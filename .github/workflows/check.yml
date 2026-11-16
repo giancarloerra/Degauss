@@ -22,6 +22,33 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates curl patch python3 g++ gcc-10-arm-linux-gnueabihf g++-10-arm-linux-gnueabihf
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Read the tested Standard Main revision
+        id: main-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(<support/standard-main-revision.txt)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: giancarloerra/Degauss-Main
+          ref: ${{ steps.main-pin.outputs.revision }}
+          path: standard-main
+          persist-credentials: false
+      - name: Check Standard Main video, input and handover
+        working-directory: standard-main
+        run: |
+          python3 tests/run-degauss-controls-tests.py
+          bash tests/run-degauss-shortcut-tests.sh
+          python3 tests/degauss_script_handover_test.py
+          python3 tests/degauss_native_scripts_test.py
+          python3 tests/run-degauss-core-menu-tests.py
+          python3 tests/run-degauss-mgl-page-tests.py
+          python3 tests/run-degauss-crt-only-tests.py
+          python3 tests/run-degauss-analog-timing-tests.py
       - name: Replay the pinned RA integration without producing release assets
         shell: bash
         run: |
@@ -37,6 +64,7 @@ jobs:
           patch --fuzz=0 -p1 < ../support/ra-main/tls.patch
           patch --fuzz=0 -p1 < ../support/ra-main/controller.patch
           patch --fuzz=0 -p1 < ../support/ra-main/mgl-pages.patch
+          patch --fuzz=0 -p1 < ../support/ra-main/crt-only.patch
           python3 tests/run-degauss-controls-tests.py
           bash tests/run-degauss-shortcut-tests.sh
           python3 tests/run-ra-controller-tests.py
@@ -45,6 +73,7 @@ jobs:
           python3 tests/degauss_native_scripts_test.py
           python3 tests/run-degauss-core-menu-tests.py
           python3 tests/run-degauss-mgl-page-tests.py
+          python3 tests/run-degauss-crt-only-tests.py
           arm-linux-gnueabihf-g++-10 -std=gnu++14 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard \
             -I. -Ilib/libco -Ilib/miniz -Ilib/md5 -Ilib/lzma -Ilib/zstd/lib \
             -Ilib/libchdr/include -Ilib/bluetooth -Ilib/serial_server/library \

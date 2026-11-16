@@ -99,17 +99,7 @@ fn install_override(
     source: &Path,
     description: &'static str,
 ) -> Result<PathBuf> {
-    if source.parent() != Some(logo_dir) || !supported_extension(source) {
-        return Err(DegaussError::unsupported(
-            description,
-            "the selected file is not a PNG or JPEG in the logos folder",
-        ));
-    }
-
-    // Refuse a corrupt or excessively large file before replacing a working
-    // selection. One-pixel scaling keeps only the validation result in RAM.
-    let mut stats = CoverStats::default();
-    covers::load_scaled(source, 1, [0, 0, 0], &mut stats)?;
+    validate_selection(logo_dir, source, description)?;
 
     let parent = destination
         .parent()
@@ -147,6 +137,39 @@ fn install_override(
         DegaussError::io("saving the custom image", &destination, error)
     })?;
     Ok(destination)
+}
+
+pub fn folder_image_filename(logo_dir: &Path, source: &Path) -> Result<String> {
+    validate_selection(logo_dir, source, "folder image")?;
+    source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| DegaussError::unsupported("folder image", "the filename is not valid UTF-8"))
+}
+
+pub fn folder_image(logo_dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.file_name() != Some(path.as_os_str()) || !supported_extension(path) {
+        return None;
+    }
+    let path = logo_dir.join(path);
+    path.is_file().then_some(path)
+}
+
+fn validate_selection(logo_dir: &Path, source: &Path, description: &'static str) -> Result<()> {
+    if source.parent() != Some(logo_dir) || !supported_extension(source) {
+        return Err(DegaussError::unsupported(
+            description,
+            "the selected file is not a PNG or JPEG in the logos folder",
+        ));
+    }
+
+    // Refuse a corrupt or excessively large file before replacing a working
+    // selection. One-pixel scaling keeps only the validation result in RAM.
+    let mut stats = CoverStats::default();
+    covers::load_scaled(source, 1, [0, 0, 0], &mut stats)?;
+    Ok(())
 }
 
 /// Remove only Degauss's managed copy. The source image and any traditional

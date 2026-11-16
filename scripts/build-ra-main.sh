@@ -8,8 +8,8 @@ if [[ $# -ne 1 || -e "$1" ]]; then
 fi
 mkdir -p "$1"
 build_root="$(cd "$1" && pwd)"
-source_pin=69f1249065f1ff3d04f5f9242355a1d5475170fe
-archive_sha=81b7bf0289bb3d7aefe478a2209bea073881dac7d3d859e610ede47ddfaf5ffe
+source_pin=2fcf1f7cf7988c74ff76fc4536a5d1c2d13f9cd3
+archive_sha=c235a0a33b62556fc289a7bdb328a3b7821789218368ab2b74c7b444062587ec
 curl --fail --location --silent --show-error \
     "https://codeload.github.com/odelot/Main_MiSTer/tar.gz/${source_pin}" \
     -o "$build_root/upstream.tar.gz"
@@ -32,6 +32,7 @@ patch --fuzz=0 -p1 < "$here/support/ra-main/frontend.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/tls.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/controller.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/mgl-pages.patch"
+patch --fuzz=0 -p1 < "$here/support/ra-main/crt-only.patch"
 image=degauss-ra-main-build:bookworm-gcc10
 # Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
 # than trusting whatever an existing local image tag happens to reference.
@@ -49,6 +50,7 @@ bash tests/run-degauss-video-tests.sh
 python3 tests/run-degauss-yc-tests.py
 python3 tests/run-degauss-core-menu-tests.py
 python3 tests/run-degauss-mgl-page-tests.py
+python3 tests/run-degauss-crt-only-tests.py
 python3 tests/run-degauss-analog-timing-tests.py
 python3 tests/degauss_script_handover_test.py
 python3 tests/degauss_native_scripts_test.py
@@ -86,6 +88,7 @@ printf 'RA Main source: %s\nDegauss integration base: 809893ddb8e3f7f40797579e0e
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'Degauss frontend patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/frontend.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
 printf 'Degauss MGL pages patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/mgl-pages.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
+printf 'Degauss CRT-only patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/crt-only.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
 printf 'CA bundle: curl Mozilla 2026-11-05 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.
 mkdir -p "$build_root/rebuild/scripts" "$build_root/rebuild/support"

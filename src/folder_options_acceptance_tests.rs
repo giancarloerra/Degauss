@@ -11,7 +11,11 @@ fn choose(app: &mut App, action: &str, delta: isize) {
     app.menu_list.select(group);
     app.handle(Action::Accept);
     assert_eq!(app.context_page, Some(ContextPage::Appearance));
-    let mut expected = vec![CHANGE_VIEW];
+    let mut expected = Vec::new();
+    if app.selected_image_target().is_some() {
+        expected.push(CHANGE_CATEGORY_IMAGE);
+    }
+    expected.push(CHANGE_VIEW);
     if app.has_custom_view() {
         expected.push(USE_GLOBAL_VIEW);
     }

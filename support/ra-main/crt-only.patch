@@ -1,0 +1,255 @@
+diff --git a/MiSTer.ini b/MiSTer.ini
+index e895697..56feb0c 100644
+--- a/MiSTer.ini
++++ b/MiSTer.ini
+@@ -39,2 +39,3 @@
+ degauss_native_analog=0 ; 1 - native CRT timing plus configured HDMI timing for Degauss. Requires vga_scaler=0.
++degauss_crt_only=0 ; 1 - turn off HDMI only while Degauss is on a separate CRT output. Not for Direct Video.
+ fb_terminal=1          ; 1 - enabled (default), 0 - disabled
+diff --git a/cfg.cpp b/cfg.cpp
+index 72c9fcf..27d264b 100644
+--- a/cfg.cpp
++++ b/cfg.cpp
+@@ -71,6 +71,7 @@ static const ini_var_t ini_vars[] =
+ 	{ "FB_SIZE", (void*)(&(cfg.fb_size)), UINT8, 0, 4 },
+ 	{ "FB_HSCALE", (void*)(&(cfg.fb_hscale)), UINT8, 1, 4 },
+ 	{ "DEGAUSS_NATIVE_ANALOG", (void*)(&(cfg.degauss_native_analog)), UINT8, 0, 1 },
++	{ "DEGAUSS_CRT_ONLY", (void*)(&(cfg.degauss_crt_only)), UINT8, 0, 1 },
+ 	{ "DEGAUSS_ANALOG_VIDEO_MODE", (void*)(cfg.degauss_analog_video_mode), STRING, 0, sizeof(cfg.degauss_analog_video_mode) - 1 },
+ 	{ "FB_TERMINAL", (void*)(&(cfg.fb_terminal)), UINT8, 0, 1 },
+ 	{ "OSD_TIMEOUT", (void*)(&(cfg.osd_timeout)), INT16, 0, 3600 },
+diff --git a/cfg.h b/cfg.h
+index befd754..cdd263a 100644
+--- a/cfg.h
++++ b/cfg.h
+@@ -42,6 +42,7 @@ typedef struct {
+ 	uint8_t fb_size;
+ 	uint8_t fb_hscale;
+ 	uint8_t degauss_native_analog;
++	uint8_t degauss_crt_only;
+ 	uint8_t fb_terminal;
+ 	uint8_t osd_rotate;
+ 	uint16_t osd_timeout;
+diff --git a/video.cpp b/video.cpp
+index 317466e..99bb486 100644
+--- a/video.cpp
++++ b/video.cpp
+@@ -89,6 +89,9 @@ VideoInfo current_video_info;
+ static int support_FHD = 0;
+ 
+ yc_mode yc_modes[20];
++static bool degauss_crt_only_active = false;
++static bool degauss_hdmi_reconnect_pending = false;
++static int degauss_hdmi_resume_power = 1;
+ 
+ struct vrr_cap_t
+ {
+@@ -1714,7 +1717,7 @@ static void hdmi_config_init()
+ 								// 10 = HPD is from HPD pin
+ 								// 11 = HPD is always high
+ 
+-		0x41, 0x10,				// Power Down control
++		0x41, (uint8_t)(degauss_crt_only_active ? 0x50 : 0x10), // Power Down control
+ 		0x9A, 0x70,				// ADI required Write.
+ 		0x9C, 0x30,				// ADI required Write.
+ 		0x9D, 0b01100001,		// [7:4] must be b0110!.
+@@ -3035,7 +3038,7 @@ void video_reinit()
+ 	return;
+ }
+ 
+-void video_hdmi_power(int on)
++static void hdmi_apply_power(int on)
+ {
+ 	// ADV7513 power-down control. 0 = power on, 1 = power down.
+ 	if (hdmi_main_fd >= 0)
+@@ -3046,8 +3049,44 @@ void video_hdmi_power(int on)
+ 	}
+ }
+ 
++void video_hdmi_power(int on)
++{
++	// Preserve the idle timer's intent without waking the transmitter.
++	degauss_hdmi_resume_power = on;
++	if (degauss_crt_only_active) return;
++	hdmi_apply_power(on);
++	if (on && degauss_hdmi_reconnect_pending)
++	{
++		degauss_hdmi_reconnect_pending = false;
++		const int status = i2c_smbus_read_byte_data(hdmi_main_fd, 0x42);
++		if (status >= 0 && (status & 0x60) == 0x60)
++		{
++			usleep(150000);
++			video_reinit();
++		}
++	}
++}
++
++static void video_update_degauss_crt_only()
++{
++	static bool warned = false;
++	const bool requested = cfg.degauss_crt_only && menu_degauss_controls_active();
++	const bool separate_analog = !cfg.direct_video &&
++		(cfg.vga_scaler || video_degauss_native_fb_active());
++	if (requested && !separate_analog && !warned)
++		cfg_error("DEGAUSS_CRT_ONLY requires a separate CRT output and direct_video=0");
++	warned = requested && !separate_analog;
++	const bool active = requested && separate_analog;
++	if (active == degauss_crt_only_active) return;
++
++	degauss_crt_only_active = active;
++	if (active) hdmi_apply_power(0);
++	else video_hdmi_power(degauss_hdmi_resume_power);
++}
++
+ void video_poll()
+ {
++	if (cfg.degauss_crt_only || degauss_crt_only_active) video_update_degauss_crt_only();
+ 	if (!hdmi_has_int()) return;
+ 
+ 	cec_poll();
+@@ -3067,6 +3106,12 @@ void video_poll()
+ 			bool hpd_high = (current_status & 0x40) != 0; // Bit 6: HPD pin level
+ 			bool MS_high = (current_status & 0x20) != 0; // Bit 5: Monitor Sense level
+ 
++			if (degauss_crt_only_active)
++			{
++				degauss_hdmi_reconnect_pending = hpd_high && MS_high;
++				return;
++			}
++			degauss_hdmi_reconnect_pending = false;
+ 			// The safe window to read EDID is when BOTH 5V power (HPD)
+ 			// and internal display termination (Monitor Sense) are fully high and stable
+ 			if (hpd_high && MS_high)
+@@ -3079,7 +3124,7 @@ void video_poll()
+ 			else
+ 			{
+ 				printf("[HDMI] Link lost or re-routing (HPD=%d, MS=%d)\n", hpd_high, MS_high);
+-				video_hdmi_power(0);
++				hdmi_apply_power(0);
+ 			}
+ 		}
+ 	}
+diff --git a/tests/run-degauss-crt-only-tests.py b/tests/run-degauss-crt-only-tests.py
+new file mode 100644
+index 0000000..432c9f2
+--- /dev/null
++++ b/tests/run-degauss-crt-only-tests.py
+@@ -0,0 +1,118 @@
++#!/usr/bin/env python3
++"""Exercise the production HDMI ownership and hotplug functions."""
++from pathlib import Path
++import re
++import subprocess
++from tempfile import TemporaryDirectory
++
++video = Path("video.cpp").read_text()
++start = re.search(r"(?m)^(?:void tmds_power|static void hdmi_apply_power)\(", video).start()
++functions = video[start:video.index("\nstatic int api1_5", start)]
++state = "\n".join(
++    re.findall(
++        r"(?m)^static (?:bool|int) (?:hdmi_power|hdmi_need_init|degauss_crt_only_active|"
++        r"degauss_hdmi_resume_power|degauss_hdmi_reconnect_pending) = .*;$",
++        video,
++    )
++)
++assert "DEGAUSS_CRT_ONLY" in Path("cfg.cpp").read_text()
++assert re.search(r"0x41, \(uint8_t\)\(.*0x10.*0x50|0x41, \(uint8_t\)\(.*0x50.*0x10", video)
++
++harness = r"""
++#include <cassert>
++#include <cstdint>
++#include <cstdio>
++
++static int hdmi_main_fd = 7;
++static int write_count = 0, last_power = 0x10, irq = 0, sense = 0, warnings = 0, reinits = 0;
++static bool owned = false, native = false, irq_supported = true;
++static struct {
++    bool degauss_crt_only = false;
++    bool direct_video = false;
++    bool vga_scaler = false;
++} cfg;
++static bool video_degauss_native_fb_active() { return native; }
++static bool menu_degauss_controls_active() { return owned; }
++static void cfg_error(const char *) { ++warnings; }
++static bool hdmi_has_int() { return irq_supported; }
++static void cec_poll() {}
++static bool fpga_get_hdmi_int() { return irq != 0; }
++static int i2c_smbus_read_byte_data(int fd, int address) {
++    assert(fd == hdmi_main_fd);
++    assert(address == 0x96 || address == 0x42);
++    return address == 0x96 ? irq : sense;
++}
++static int i2c_smbus_write_byte_data(int fd, int address, int data) {
++    assert(fd == hdmi_main_fd);
++    assert(address == 0x96 || address == 0x41);
++    if (address == 0x96) irq &= ~data;
++    else { ++write_count; last_power = data; }
++    return 0;
++}
++static void video_reinit();
++"""
++standard = "static int hdmi_power" in state
++if standard:
++    harness += """
++static void hdmi_config_audio() {}
++static void video_reinit() { ++reinits; hdmi_need_init = 0; }
++"""
++else:
++    harness += """
++static void usleep(unsigned) {}
++static void video_reinit() { ++reinits; }
++"""
++tests = r"""
++int main() {
++    owned = native = true;
++    video_poll();
++    assert(write_count == 0); // default off: do not touch HDMI
++    native = false;
++    cfg.degauss_crt_only = true;
++    video_poll();
++    video_poll();
++    assert(warnings == 1 && write_count == 0); // HDMI-only misconfiguration
++
++    native = true;
++    cfg.direct_video = true;
++    video_poll();
++    assert(!degauss_crt_only_active && last_power == 0x10);
++    cfg.direct_video = false;
++    video_poll();
++    assert(degauss_crt_only_active && last_power == 0x50);
++
++    const int writes = write_count;
++    video_hdmi_power(1); // input resets the existing idle timer
++    assert(write_count == writes && last_power == 0x50);
++    irq = 0xc0;
++    sense = 0;
++    video_poll(); // unplug
++    irq = 0xc0;
++    sense = 0x60;
++    video_poll(); // reconnect with stable HPD and monitor sense
++    assert(!irq && last_power == 0x50 && reinits == 0);
++    owned = false; // ordinary exit and native handovers use the same ownership bit
++    video_poll();
++    assert(!degauss_crt_only_active && last_power == 0x10 && reinits == 1);
++
++    irq_supported = false; // boards without hotplug IRQ still need the setting
++    native = false;
++    cfg.vga_scaler = owned = true;
++    video_poll();
++    assert(degauss_crt_only_active && last_power == 0x50);
++    video_hdmi_power(0); // honour the pre-existing idle timer on return
++    owned = false;
++    video_poll();
++    assert(!degauss_crt_only_active && last_power == 0x50);
++    video_hdmi_power(1);
++    assert(last_power == 0x10);
++}
++"""
++with TemporaryDirectory(prefix="degauss-crt-only-") as directory:
++    target = Path(directory) / "test"
++    source = target.with_suffix(".cpp")
++    includes, declarations = harness.split("static int hdmi_main_fd", 1)
++    source.write_text(includes + state + "\nstatic int hdmi_main_fd" + declarations + functions + tests)
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(target)], check=True)
++    subprocess.run([str(target)], check=True)
++print("CRT-only HDMI ownership and reconnect checks passed.")

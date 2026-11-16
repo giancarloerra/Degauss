@@ -766,7 +766,7 @@ impl App {
             if self
                 .logo_dir
                 .as_deref()
-                .is_some_and(|dir| target.has_override(dir))
+                .is_some_and(|dir| target.has_override(dir, &self.settings))
             {
                 rows.push(CLEAR_CATEGORY_IMAGE.into());
             }

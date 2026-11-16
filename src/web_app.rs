@@ -1537,9 +1537,15 @@ impl App {
                 .collect::<Vec<_>>());
         }
         let rows:Vec<_> = page.entries.into_iter().map(|entry| {
+            let folder_artwork = match &entry.target {
+                Some(crate::home::Target::LibraryFolder { system, trail }) => trail.last().and_then(|place| {
+                    folder_image_path(self.settings.folder_preferences.get(system), place, self.logo_dir.as_deref())
+                }),
+                _ => None,
+            };
             let target = entry.target.map(|target| self.web_register(target,entry.row.clone()));
             let folder = entry.folder.map(|folder| { let id=web_id("script-folder",&folder); self.web.script_folders.insert(id.clone(),folder); id });
-            let artwork = entry.row.as_ref().and_then(|row|row.cover.clone()).or_else(||entry.system.as_ref().and_then(|id|self.all_systems.iter().find(|system|&system.def.id==id)).and_then(|system|self.system_logo(system)));
+            let artwork = folder_artwork.or_else(|| entry.row.as_ref().and_then(|row|row.cover.clone())).or_else(||entry.system.as_ref().and_then(|id|self.all_systems.iter().find(|system|&system.def.id==id)).and_then(|system|self.system_logo(system)));
             let image = self.web_art(artwork);
             json!({"id":target,"name":entry.name,"system":entry.system,"system_name":entry.system_name,"image":image,"genre":entry.row.as_ref().and_then(|row|row.genre.clone()),"details":entry.row.as_ref().map(|row|&row.details),"favorite":entry.row.as_ref().is_some_and(|row|row.favorite),"kind":if folder.is_some()||entry.row.as_ref().is_some_and(|row|row.is_folder()){"folder"}else{"game"},"script_folder":folder,"games":entry.row.as_ref().and_then(|row|row.below)})
         }).collect();

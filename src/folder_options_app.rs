@@ -26,6 +26,15 @@ fn set_folder_preferences(
     }
 }
 
+fn folder_image_path(
+    preferences: Option<&std::collections::BTreeMap<String, FolderPreferences>>,
+    place: &Place,
+    logo_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    let image = preferences?.get(&place.key())?.image.as_deref()?;
+    crate::category_images::folder_image(logo_dir?, image)
+}
+
 #[cfg(test)]
 mod folder_preference_tests {
     use super::*;
@@ -125,6 +134,40 @@ fn relocate_folder_preferences(
 }
 
 impl App {
+    fn set_folder_image(
+        &mut self,
+        system: &str,
+        place: &str,
+        source: Option<&Path>,
+    ) -> Result<SaveOutcome> {
+        let image = source
+            .map(|source| {
+                let directory = self.logo_dir.as_deref().ok_or_else(|| {
+                    DegaussError::unsupported("folder image", "the logos folder is unavailable")
+                })?;
+                crate::category_images::folder_image_filename(directory, source)
+            })
+            .transpose()?;
+        let mut settings = self.settings.clone();
+        let mut preferences = settings
+            .folder_preferences
+            .get(system)
+            .and_then(|places| places.get(place))
+            .cloned()
+            .unwrap_or_default();
+        preferences.image = image;
+        set_folder_preferences(&mut settings, system, place, preferences);
+        let outcome = settings.save(&self.settings_path)?;
+        self.settings = settings;
+        self.covers = self.fresh_cover_cache();
+        self.gallery_covers = self.fresh_gallery_cover_cache();
+        if self.open_system.as_deref() == Some(system) && self.current_folder_place().is_some() {
+            self.relist_here_preserving_game_filters();
+        }
+        self.dirty = true;
+        Ok(outcome)
+    }
+
     fn current_folder_place(&self) -> Option<(String, String)> {
         if self.browsing != Browsing::Games
             || self.explore.active

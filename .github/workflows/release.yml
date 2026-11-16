@@ -28,26 +28,40 @@ jobs:
             gcc-10-arm-linux-gnueabihf g++-10-arm-linux-gnueabihf \
             binutils-arm-linux-gnueabihf make ca-certificates git file
 
-      - name: Check out the fork
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Read the tested Standard Main revision
+        id: main-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(<support/standard-main-revision.txt)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Check out the tested fork revision
         uses: actions/checkout@v5
         with:
           repository: giancarloerra/Degauss-Main
-          ref: degauss
+          ref: ${{ steps.main-pin.outputs.revision }}
+          path: standard-main
+          persist-credentials: false
 
-      # The branch moves. GPL asks for the source that corresponds to the
-      # binary, so the exact revision is recorded and shipped beside it.
+      # Record the exact GPL source shipped with this binary.
       - name: Record the revision it was built from
         id: fork
+        working-directory: standard-main
         run: |
           # The job runs as root inside the container while the checkout is
           # owned by the runner user, and git refuses to read a repository
           # owned by somebody else until told this one is expected.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/standard-main"
           SHA=$(git rev-parse HEAD)
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "built from ${SHA}"
 
       - name: Build
+        working-directory: standard-main
         # The Cortex-A9 in the DE10-Nano has NEON and upstream builds with
         # it: the scalar fallback in scaler.cpp is guarded by __ARM_NEON and
         # does not compile. Debian's compiler defaults to vfpv3-d16 and would
@@ -59,6 +73,7 @@ jobs:
           mv bin/MiSTer MiSTer_Degauss
 
       - name: Check it is what it should be
+        working-directory: standard-main
         # MiSTer Main links against the glibc on the device, so unlike the
         # frontend it is dynamically linked, and it builds as a PIE: `file`
         # says "LSB pie executable" rather than "LSB executable".
@@ -67,6 +82,7 @@ jobs:
             | grep -qE "ELF 32-bit LSB (pie )?executable, ARM"
 
       - name: Carry the revision to the packaging job
+        working-directory: standard-main
         env:
           FORK_SHA: ${{ steps.fork.outputs.sha }}
         run: printf '%s' "$FORK_SHA" > MiSTer_Degauss.sha
@@ -75,8 +91,8 @@ jobs:
         with:
           name: MiSTer_Degauss
           path: |
-            MiSTer_Degauss
-            MiSTer_Degauss.sha
+            standard-main/MiSTer_Degauss
+            standard-main/MiSTer_Degauss.sha
 
   ra-main:
     runs-on: ubuntu-latest

@@ -19,7 +19,7 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 3. **Web Access** optionally brings your library, artwork, organisation, settings and launches to a phone or computer, with five independent browser views, HTTP or HTTPS, a password and a documented API.
 4. **Six built-in views**, with a different view for each system or folder if you want.
 5. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
-6. **Folder Options** save rotation, folder position and game-name display per library or Favourites folder, independently of global defaults.
+6. **Folder Options** save rotation, folder position and game-name display per library or Favourites folder, with optional custom folder images.
 7. **Artwork and full game information** from existing files and artwork packs, with a global pack-type default and per-system choices, or Degauss's built-in scrapers.
 8. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
 9. **Themes** with an on-device editor, font choices and custom system images.
@@ -711,8 +711,10 @@ Replace the previous `[Menu]` `video_mode` line rather than adding another one:
 ```ini
 [Menu]
 fb_terminal=1
+direct_video=0
 vga_scaler=0
 degauss_native_analog=1
+degauss_crt_only=0
 video_mode=8
 ```
 
@@ -724,6 +726,45 @@ video configuration used by game cores. With Degauss's bundled Menu core,
 `degauss_native_analog=1` sends the framebuffer to analog at native 15 kHz
 while HDMI keeps its configured `video_mode`. It is off by default, so existing
 HDMI-only and shared-scaler setups do not change.
+
+#### HDMI only
+
+With a normal HDMI connection, use the following in the active `[Menu]` block.
+Degauss appears over HDMI at 1080p60; the CRT does not show the Degauss
+interface. Change `video_mode` if your HDMI display needs a different mode.
+
+```ini
+[Menu]
+fb_terminal=1
+direct_video=0
+vga_scaler=0
+degauss_native_analog=0
+degauss_crt_only=0
+video_mode=8
+```
+
+#### CRT only
+
+Use a separate working analog CRT connection with Degauss's bundled Main and
+Menu. This uses native CRT timing and switches off HDMI only while Degauss owns
+the display. HDMI returns to its usual behaviour when you exit or launch a game
+or script. This works with either bundled Main choice.
+
+```ini
+[Menu]
+fb_terminal=1
+direct_video=0
+vga_scaler=0
+degauss_native_analog=1
+degauss_crt_only=1
+video_mode=8
+```
+
+If you already use the shared scaler, keep `vga_scaler=1` and the
+known-working CRT `video_mode` instead; just add `degauss_crt_only=1` to that
+profile. Leave this setting off with a Direct Video adapter: it needs the HDMI
+port to drive the CRT. An invalid route reports an INI error without turning
+HDMI off.
 
 #### Optional: keep an existing CRT timing
 
@@ -1048,7 +1089,9 @@ Sharp MZ-2500 requires `boot.rom` containing the IPL and kanji ROMs. MZT tapes
 use file-transfer slot 1 and reset: save MZ-2000 or MZ-80B Boot mode, launch
 the tape, then press C at the IPL. BIN/DAT RAM snapshots use file-transfer
 slot 2 and start immediately in MZ-2000 mode, without a reset that would
-return to the IPL. Convert DSK/MFI disks and WAV tapes to D88/MZT first.
+return to the IPL. Build 20261113 and later also mount raw 640 KiB HDM
+floppies with the same drive and reset settings as D88. Convert DSK/MFI
+disks and WAV tapes to D88/MZT first.
 For a 15 kHz CRT, select **200 (15 kHz)** under the core's **Lines (reset)**
 option; its default is 400 lines at 24 kHz. Follow the
 [core's instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/SharpMZ2500/README.md)
@@ -1077,6 +1120,14 @@ option. Supply `boot.rom` and the additional `boot1.rom`, `boot2.rom` or
 [PC-6001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/PC6001/Readme.md)
 for ROM assembly, disk firmware and model-specific drive requirements.
 
+**NEC PC-8001** (`games/PC8001`) covers the PC-8001, mkII and mkIISR.
+D88 disks mount in Drive 1 (image slot 0); an explicit MGL can use Drive 2
+(slot 1). CMT/T88 tapes use file slot 1, ROM/BIN expansions use slot 2 and
+N80 memory images use slot 3. Load N80 images once the matching BASIC mode
+is ready. D88 needs the disk unit ROM in `boot.rom`. See the
+[PC-8001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/d05d384f6829a3dde9d2dfd569e8ab64bcc72e72/docs/PC8001/README.md)
+for the firmware and model setup. This is separate from the PC-8801 library.
+
 **Memotech MTX500/512** (`games/MTX512`) sends MTX/WAV tapes to **Insert Tape**
 (file slot 1) and mounts MFL/DSK images in SDX Disc A (image slot 1).
 Use an explicit MGL for Disc B (image slot 2). The writable **Save Tape**
@@ -1094,13 +1145,14 @@ for the SDX ROM, CP/M boot ROM and writable disc setup.
 **Acorn Electron** (`games/AcornElectron`) retains VHDs in image slot 0.
 UEF tapes use file slot 2 from build 20220211; CAS tapes use the same slot
 from 20261111. Select **File** tape input and type `*TAPE` then `CHAIN""`.
-Build 20261111 also adds ROM cartridges (file slot 3) and ADF/ADL Plus 3
-floppies (image slot 1). Enable **Plus 3**, apply the reset and save the
+Build 20261111 adds ROM cartridges (file slot 3) and ADF/ADL Plus 3 floppies
+(image slot 1). Build 20261114 also accepts ADM, SSD and DSD floppies.
+Enable **Plus 3**, apply the reset and save the
 core setting before launching a floppy. An explicit MGL can use the second
 cartridge socket (file slot 4) or floppy drive (image slot 2). The current
 core does not accept BIN cartridges through Main, despite listing them in
-its menu. See the
-[Electron instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/AcornElectron/Readme.MD).
+its menu. Use **Shift + Break** to boot a bootable DFS disk. See the
+[Electron instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/324f65c00a0ebf9dac1fbe3c755eab0b866e9e46/docs/AcornElectron/Readme.MD).
 
 If an existing Atom or Electron library still shows its old list after
 updating, use **Actions → Library → Rebuild This System List** there to pick
@@ -1166,7 +1218,7 @@ cores and their normal game folders:
 | System and folder | Media | Default MGL slot |
 | --- | --- | --- |
 | IQ 151, `games/IQ151` | DSK floppy | `s`, 1 (Floppy 0/A) |
-| VideoBrain, `games/VideoBrain` | Assembled BIN cartridge | `f`, 1 |
+| VideoBrain, `games/VideoBrain` | BIN or VBC cartridge (VBC needs build 20261113 or later) | `f`, 1 |
 | Soyuz-Neon PK-11/16, `games/Neon` | DSK floppy / IMG hard disk | `s`, 0 / `s`, 2 |
 | PC-88, `games/PC8801` or `games/PC88` | CMT or T88 tape | `s`, 4 |
 | UKNC, `games/UKNC` | VHD hard disk | `s`, 2 |
@@ -1431,6 +1483,15 @@ An in-app Favourites folder rename preserves its preferences and those of its
 subfolders. Successful in-app deletion removes them; unavailable storage does
 not. External filesystem renames are not tracked. Home, category, system-list
 and special-browser Actions menus retain their existing organisation.
+
+To set an image on a folder, **highlight the folder from its parent**, then
+choose **X Actions → Folder Options → Change Image**. Pick a PNG or JPEG
+from Degauss's `logos` directory. In Web Access, open the folder's actions
+and choose **Choose image** to select or upload one. This works for nested,
+browsable ZIP and Favourites folders. The choice belongs to that exact
+location, so same-named folders can differ. **Clear Custom Image** (or
+**Use default image** on the web) restores the previous automatic artwork
+or the Favourites heart. No library rebuild is needed.
 
 Full information is read only for the settled selected game, from its
 configured Gamelist or Artwork Pack. Long information scrolls slowly after a

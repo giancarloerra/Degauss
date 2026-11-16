@@ -664,10 +664,15 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let (name, requirements): (&str, &[(&str, &[&str])]) = if same_core_identity(stem, "TK2000")
-        || crate::core_choices::nightly_matches(stem, "_Computer/TK2000")
-    {
+    let matches = |family| {
+        same_core_identity(stem, family) || crate::core_choices::nightly_matches(stem, family)
+    };
+    let (name, requirements): (&str, &[(&str, &[&str])]) = if matches("TK2000") {
         ("TK2000", &[("20261107", &["ct2"])])
+    } else if matches("SharpMZ2500") {
+        ("Sharp MZ-2500 / MZ-2520", &[("20261113", &["hdm"])])
+    } else if matches("VideoBrain") {
+        ("VideoBrain", &[("20261113", &["vbc"])])
     } else {
         match acorn_media_family(stem) {
             Some("AcornAtom") => ("Acorn Atom", &[("20261111", &["uef", "csw"])]),
@@ -676,6 +681,7 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
                 &[
                     ("20220211", &["uef"]),
                     ("20261111", &["cas", "rom", "adf", "adl"]),
+                    ("20261114", &["adm", "ssd", "dsd"]),
                 ],
             ),
             _ => return Ok(()),

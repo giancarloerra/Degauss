@@ -45,7 +45,9 @@ impl App {
                         excluded: self.artwork_pack_scraper_exclusions(),
                     }
                 }
-                crate::home::Target::Category { .. } | crate::home::Target::System { .. } => {
+                crate::home::Target::Category { .. }
+                | crate::home::Target::System { .. }
+                | crate::home::Target::LibraryFolder { .. } => {
                     crate::web::upload::Destination::Logo(
                         self.logo_dir
                             .clone()
@@ -54,7 +56,7 @@ impl App {
                 }
                 _ => {
                     return Err(web_error(
-                        "Choose a game, system, category or personal Home entry.",
+                        "Choose a game, library folder, system, category or personal Home entry.",
                     ))
                 }
             }
@@ -349,13 +351,13 @@ impl App {
                     entry.image = source;
                     self.web_save(settings)?;
                 } else {
-                    let target = &self
+                    let selected = &self
                         .web
                         .targets
                         .get(&target)
                         .ok_or_else(|| web_error("Refresh the target page first."))?
                         .target;
-                    let target = match target {
+                    let target = match selected {
                         crate::home::Target::System { system } => ImageTarget::System {
                             id: system.clone(),
                             name: system.clone(),
@@ -363,12 +365,19 @@ impl App {
                         crate::home::Target::Category { category } => {
                             ImageTarget::Category(category.clone())
                         }
-                        _ => return Err(web_error("Choose a Home entry, category or system.")),
+                        crate::home::Target::LibraryFolder { .. } => {
+                            let (system, place) = self.web_folder_target(&target)?;
+                            ImageTarget::Folder { system, place, name: String::new() }
+                        }
+                        _ => return Err(web_error("Choose a Home entry, category, system or library folder.")),
                     };
-                    if let Some(source) = source {
-                        target.install(directory, &source).map_err(web_error)?;
-                    } else {
-                        target.clear(directory).map_err(web_error)?;
+                    if let SaveOutcome::InstalledWithWarning(error) =
+                        target.change(self, source.as_deref()).map_err(web_error)?
+                    {
+                        return Err(WebError::new(
+                            "durability",
+                            format!("Image choice installed, but flushing settings failed: {error}"),
+                        ));
                     }
                 }
                 self.covers = self.fresh_cover_cache();

@@ -307,15 +307,14 @@ component MenuRow inherits Rectangle {
         font-family: root.family-name;
         visible: false;
     }
-    Text {
-        text: root.item.favorite ? "\u{2665}" : "";
-        color: root.favorite-color;
-        font-size: root.font-size;
-        font-family: root.family-name;
+    if root.item.favorite: Image {
+        source: @image-url("favorite-heart.svg");
+        colorize: root.favorite-color;
+        image-fit: contain;
         x: root.pad;
-        width: root.marker-width;
-        height: parent.height;
-        vertical-alignment: center;
+        y: (parent.height - self.height) / 2;
+        width: min(root.font-size, root.marker-width);
+        height: min(root.font-size, parent.height);
     }
     ScrollingTitle {
         text: root.item.title;

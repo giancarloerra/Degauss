@@ -248,18 +248,27 @@ impl App {
             }
             WebCommand::FolderOptions { target } => {
                 let (system, place) = self.web_folder_target(&target)?;
+                let mut preferences = self.settings.folder_preferences.get(&system)
+                    .and_then(|places| places.get(&place)).cloned().unwrap_or_default();
+                preferences.image = None;
                 Ok(
-                    json!({"preferences":self.settings.folder_preferences.get(&system).and_then(|places|places.get(&place)).cloned().unwrap_or_default(),"revision":self.web_revision()}),
+                    json!({"preferences":preferences,"revision":self.web_revision()}),
                 )
             }
             WebCommand::FolderOptionsSave {
                 revision,
                 target,
-                preferences,
+                mut preferences,
             } => {
                 self.web_check_revision(&revision)?;
                 let (system, place) = self.web_folder_target(&target)?;
+                if preferences.image.is_some() {
+                    return Err(web_error("Use Choose image to change a folder image."));
+                }
                 let mut settings = self.settings.clone();
+                preferences.image = settings.folder_preferences.get(&system)
+                    .and_then(|places| places.get(&place))
+                    .and_then(|existing| existing.image.clone());
                 set_folder_preferences(&mut settings, &system, &place, preferences);
                 self.web_save(settings)?;
                 self.resolve_folder_preferences();

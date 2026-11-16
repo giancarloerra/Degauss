@@ -1186,7 +1186,9 @@ pub fn favorite_mgl_with_selections(
         || Path::new(&family.rbf).file_name().is_some_and(|name| {
             name.eq_ignore_ascii_case("N64")
                 || name.eq_ignore_ascii_case("SharpMZ")
+                || name.eq_ignore_ascii_case("SharpMZ2500")
                 || name.eq_ignore_ascii_case("TK2000")
+                || name.eq_ignore_ascii_case("VideoBrain")
         }))
         && dated_standard
         && !needs_exact_acorn;
@@ -1802,6 +1804,69 @@ mod tests {
                 plan_with_selections(&system, &legacy, &output, &root, false, None, None).unwrap();
             assert!(plan.mgl.is_empty() && plan.command.contains(legacy.to_str().unwrap()));
             assert_eq!(std::fs::read_to_string(&legacy).unwrap(), setup);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_computer_media_require_the_matching_delivered_core_but_keep_legacy_media() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-media-20261114-{}", std::process::id()));
+        let cores = root.join("_Computer");
+        std::fs::create_dir_all(&cores).unwrap();
+        let output = root.join("launch.mgl");
+        for (id, previous, minimum, new_media, legacy) in [
+            (
+                "AcornElectron",
+                "20261111",
+                "20261114",
+                &["adm", "ssd", "dsd"][..],
+                "adl",
+            ),
+            ("SharpMZ2500", "20261104", "20261113", &["hdm"][..], "d88"),
+            ("VideoBrain", "20261027", "20261113", &["vbc"][..], "bin"),
+        ] {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            let legacy = games.join(format!("Legacy.{legacy}"));
+            std::fs::write(&legacy, b"media fixture").unwrap();
+            for date in [previous, minimum] {
+                let binary = cores.join(format!("{id}_{date}.rbf"));
+                std::fs::write(&binary, b"core fixture").unwrap();
+                assert!(
+                    plan_with_selections(&system, &legacy, &output, &root, false, None, None)
+                        .is_ok()
+                );
+                for extension in new_media {
+                    let game = games.join(format!("New.{}", extension.to_ascii_uppercase()));
+                    std::fs::write(&game, b"media fixture").unwrap();
+                    let plan =
+                        plan_with_selections(&system, &game, &output, &root, false, None, None);
+                    let favorite =
+                        favorite_mgl_with_selections(&system, &game, &root, false, None, None);
+                    if date == previous {
+                        assert!(
+                            plan.unwrap_err().to_string().contains(minimum),
+                            "{id}/{extension}"
+                        );
+                        assert!(
+                            favorite.unwrap_err().to_string().contains(minimum),
+                            "{id}/{extension}"
+                        );
+                    } else {
+                        assert!(plan
+                            .unwrap()
+                            .mgl
+                            .contains(&format!("_Computer/{id}_{minimum}")));
+                        assert!(favorite
+                            .unwrap()
+                            .unwrap()
+                            .contains(&format!("<rbf>_Computer/{id}</rbf>")));
+                    }
+                }
+                std::fs::remove_file(binary).unwrap();
+            }
         }
         std::fs::remove_dir_all(root).unwrap();
     }
