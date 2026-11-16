@@ -1994,10 +1994,13 @@ impl ImageTarget {
         }
     }
 
-    fn has_override(&self, logo_dir: &Path, settings: &Settings) -> bool {
+    fn has_override(&self, logo_dir: Option<&Path>, settings: &Settings) -> bool {
         match self {
-            Self::Category(name) => crate::category_images::has_override(logo_dir, name),
-            Self::System { id, .. } => crate::category_images::has_system_override(logo_dir, id),
+            Self::Category(name) => logo_dir
+                .is_some_and(|directory| crate::category_images::has_override(directory, name)),
+            Self::System { id, .. } => logo_dir.is_some_and(|directory| {
+                crate::category_images::has_system_override(directory, id)
+            }),
             Self::Folder { system, place, .. } => settings
                 .folder_preferences
                 .get(system)
@@ -18943,11 +18946,9 @@ impl App {
             && self
                 .browse_row(self.game_list.selected())
                 .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)));
-        let image_override = self.selected_image_target().map(|target| {
-            self.logo_dir
-                .as_deref()
-                .is_some_and(|logo_dir| target.has_override(logo_dir, &self.settings))
-        });
+        let image_override = self
+            .selected_image_target()
+            .map(|target| target.has_override(self.logo_dir.as_deref(), &self.settings));
         let game_data_source = context_system
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);

@@ -427,7 +427,31 @@ fn run_favourites(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             layout.label()
         );
     }
-    app.set_folder_image("Favorites", &original, None).unwrap();
+    // Clearing the saved folder preference must not require the logo source.
+    let logos = app.logo_dir.take();
+    select_row_named(&mut app, "Original");
+    app.open_context();
+    let options = app
+        .menu
+        .iter()
+        .position(|entry| entry == "Folder Options")
+        .unwrap();
+    app.menu_list.select(options);
+    app.handle(Action::Accept);
+    let clear = app
+        .menu
+        .iter()
+        .position(|entry| entry == CLEAR_CATEGORY_IMAGE)
+        .expect("a saved folder image can be cleared without a logos directory");
+    app.menu_list.select(clear);
+    app.handle(Action::Accept);
+    assert!(matches!(app.pending, Some(Pending::ClearCategoryImage(_))));
+    app.handle(Action::Accept);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    let preferences = &saved.folder_preferences["Favorites"][&original];
+    assert_eq!(preferences.image, None);
+    assert_eq!(preferences.folders_last, Some(true));
+    app.logo_dir = logos;
     app.set_layout(Layout::Details);
     enter(&mut app, "Original");
     assert!(app.folders_last);
