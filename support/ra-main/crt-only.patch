@@ -31,20 +31,22 @@ index befd754..cdd263a 100644
  	uint8_t osd_rotate;
  	uint16_t osd_timeout;
 diff --git a/video.cpp b/video.cpp
-index 317466e..99bb486 100644
+index 317466e..b89a506 100644
 --- a/video.cpp
 +++ b/video.cpp
-@@ -89,6 +89,9 @@ VideoInfo current_video_info;
+@@ -89,6 +89,11 @@ VideoInfo current_video_info;
  static int support_FHD = 0;
  
  yc_mode yc_modes[20];
 +static bool degauss_crt_only_active = false;
 +static bool degauss_hdmi_reconnect_pending = false;
 +static int degauss_hdmi_resume_power = 1;
++static bool degauss_hdmi_power_pending = false;
++static unsigned long degauss_hdmi_retry_at = 0;
  
  struct vrr_cap_t
  {
-@@ -1714,7 +1717,7 @@ static void hdmi_config_init()
+@@ -1714,7 +1719,7 @@ static void hdmi_config_init()
  								// 10 = HPD is from HPD pin
  								// 11 = HPD is always high
  
@@ -53,38 +55,67 @@ index 317466e..99bb486 100644
  		0x9A, 0x70,				// ADI required Write.
  		0x9C, 0x30,				// ADI required Write.
  		0x9D, 0b01100001,		// [7:4] must be b0110!.
-@@ -3035,7 +3038,7 @@ void video_reinit()
+@@ -3035,19 +3040,81 @@ void video_reinit()
  	return;
  }
  
 -void video_hdmi_power(int on)
-+static void hdmi_apply_power(int on)
++static bool hdmi_apply_power(int on)
  {
  	// ADV7513 power-down control. 0 = power on, 1 = power down.
- 	if (hdmi_main_fd >= 0)
-@@ -3046,8 +3049,45 @@ void video_hdmi_power(int on)
- 	}
- }
- 
+-	if (hdmi_main_fd >= 0)
++	if (hdmi_main_fd < 0) return false;
++	uint8_t val = on ? 0x10 : 0x50;
++	int res = i2c_smbus_write_byte_data(hdmi_main_fd, 0x41, val);
++	if (res < 0) printf("i2c: write error (41 %02X): %d\n", val, res);
++	return res >= 0;
++}
++
 +void video_hdmi_power(int on)
 +{
 +	// Preserve the idle timer's intent without waking the transmitter.
 +	degauss_hdmi_resume_power = on;
-+	if (degauss_crt_only_active) return;
-+	hdmi_apply_power(on);
++	if (degauss_crt_only_active || degauss_hdmi_power_pending) return;
 +	if (on && degauss_hdmi_reconnect_pending)
 +	{
-+		const int status = i2c_smbus_read_byte_data(hdmi_main_fd, 0x42);
-+		if (status < 0) return;
-+		degauss_hdmi_reconnect_pending = false;
-+		if ((status & 0x60) == 0x60)
-+		{
-+			usleep(150000);
-+			video_reinit();
-+		}
++		degauss_hdmi_power_pending = true;
++		degauss_hdmi_retry_at = 0;
++		return;
 +	}
++	hdmi_apply_power(on);
 +}
 +
++static void video_retry_degauss_hdmi()
++{
++	if (hdmi_main_fd < 0 || !CheckTimer(degauss_hdmi_retry_at)) return;
++	if (degauss_hdmi_power_pending)
++	{
++		if (!hdmi_apply_power(!degauss_crt_only_active && degauss_hdmi_resume_power))
++		{
++			degauss_hdmi_retry_at = GetTimer(250);
++			return;
++		}
++		degauss_hdmi_power_pending = false;
++	}
++	if (degauss_crt_only_active || !degauss_hdmi_resume_power || !degauss_hdmi_reconnect_pending) return;
++	const int status = i2c_smbus_read_byte_data(hdmi_main_fd, 0x42);
++	if (status < 0)
++	{
++		printf("i2c: read error (42): %d\n", status);
++		degauss_hdmi_retry_at = GetTimer(250);
++		return;
++	}
++	degauss_hdmi_reconnect_pending = false;
++	if ((status & 0x60) == 0x60)
+ 	{
+-		uint8_t val = on ? 0x10 : 0x50;
+-		int res = i2c_smbus_write_byte_data(hdmi_main_fd, 0x41, val);
+-		if (res < 0) printf("i2c: write error (41 %02X): %d\n", val, res);
++		usleep(150000);
++		video_reinit();
+ 	}
+ }
+ 
 +static void video_update_degauss_crt_only()
 +{
 +	static bool warned = false;
@@ -98,21 +129,24 @@ index 317466e..99bb486 100644
 +	if (active == degauss_crt_only_active) return;
 +
 +	degauss_crt_only_active = active;
-+	if (active) hdmi_apply_power(0);
-+	else video_hdmi_power(degauss_hdmi_resume_power);
++	degauss_hdmi_power_pending = true;
++	degauss_hdmi_retry_at = 0;
 +}
 +
  void video_poll()
  {
 +	if (cfg.degauss_crt_only || degauss_crt_only_active) video_update_degauss_crt_only();
++	if (degauss_hdmi_power_pending ||
++		(degauss_hdmi_reconnect_pending && !degauss_crt_only_active && degauss_hdmi_resume_power))
++		video_retry_degauss_hdmi();
  	if (!hdmi_has_int()) return;
  
  	cec_poll();
-@@ -3067,6 +3107,12 @@ void video_poll()
+@@ -3067,6 +3134,12 @@ void video_poll()
  			bool hpd_high = (current_status & 0x40) != 0; // Bit 6: HPD pin level
  			bool MS_high = (current_status & 0x20) != 0; // Bit 5: Monitor Sense level
  
-+			if (degauss_crt_only_active)
++			if (degauss_crt_only_active || degauss_hdmi_power_pending)
 +			{
 +				degauss_hdmi_reconnect_pending = hpd_high && MS_high;
 +				return;
@@ -121,7 +155,7 @@ index 317466e..99bb486 100644
  			// The safe window to read EDID is when BOTH 5V power (HPD)
  			// and internal display termination (Monitor Sense) are fully high and stable
  			if (hpd_high && MS_high)
-@@ -3079,7 +3125,7 @@ void video_poll()
+@@ -3079,7 +3152,7 @@ void video_poll()
  			else
  			{
  				printf("[HDMI] Link lost or re-routing (HPD=%d, MS=%d)\n", hpd_high, MS_high);
@@ -132,10 +166,10 @@ index 317466e..99bb486 100644
  	}
 diff --git a/tests/run-degauss-crt-only-tests.py b/tests/run-degauss-crt-only-tests.py
 new file mode 100644
-index 0000000..432c9f2
+index 0000000..299821f
 --- /dev/null
 +++ b/tests/run-degauss-crt-only-tests.py
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,156 @@
 +#!/usr/bin/env python3
 +"""Exercise the production HDMI ownership and hotplug functions."""
 +from pathlib import Path
@@ -144,12 +178,13 @@ index 0000000..432c9f2
 +from tempfile import TemporaryDirectory
 +
 +video = Path("video.cpp").read_text()
-+start = re.search(r"(?m)^(?:void tmds_power|static void hdmi_apply_power)\(", video).start()
++start = re.search(r"(?m)^static bool (?:tmds_power|hdmi_apply_power)\(", video).start()
 +functions = video[start:video.index("\nstatic int api1_5", start)]
 +state = "\n".join(
 +    re.findall(
-+        r"(?m)^static (?:bool|int) (?:hdmi_power|hdmi_need_init|degauss_crt_only_active|"
-+        r"degauss_hdmi_resume_power|degauss_hdmi_reconnect_pending) = .*;$",
++        r"(?m)^static (?:bool|int|unsigned long) (?:hdmi_power|hdmi_need_init|degauss_crt_only_active|"
++        r"degauss_hdmi_resume_power|degauss_hdmi_reconnect_pending|degauss_hdmi_power_pending|"
++        r"degauss_hdmi_retry_at) = .*;$",
 +        video,
 +    )
 +)
@@ -163,6 +198,8 @@ index 0000000..432c9f2
 +
 +static int hdmi_main_fd = 7;
 +static int write_count = 0, last_power = 0x10, irq = 0, sense = 0, warnings = 0, reinits = 0;
++static int failed_writes = 0, power_attempts = 0, sense_reads = 0;
++static unsigned long now_ms = 0;
 +static bool owned = false, native = false, irq_supported = true;
 +static struct {
 +    bool degauss_crt_only = false;
@@ -175,16 +212,25 @@ index 0000000..432c9f2
 +static bool hdmi_has_int() { return irq_supported; }
 +static void cec_poll() {}
 +static bool fpga_get_hdmi_int() { return irq != 0; }
++static unsigned long GetTimer(unsigned long delay) { return now_ms + delay; }
++static bool CheckTimer(unsigned long deadline) { return now_ms >= deadline; }
 +static int i2c_smbus_read_byte_data(int fd, int address) {
 +    assert(fd == hdmi_main_fd);
 +    assert(address == 0x96 || address == 0x42);
-+    return address == 0x96 ? irq : sense;
++    if (address == 0x96) return irq;
++    ++sense_reads;
++    return sense;
 +}
 +static int i2c_smbus_write_byte_data(int fd, int address, int data) {
 +    assert(fd == hdmi_main_fd);
 +    assert(address == 0x96 || address == 0x41);
 +    if (address == 0x96) irq &= ~data;
-+    else { ++write_count; last_power = data; }
++    else {
++        ++power_attempts;
++        if (failed_writes > 0) { --failed_writes; return -1; }
++        ++write_count;
++        last_power = data;
++    }
 +    return 0;
 +}
 +static void video_reinit();
@@ -216,7 +262,16 @@ index 0000000..432c9f2
 +    video_poll();
 +    assert(!degauss_crt_only_active && last_power == 0x10);
 +    cfg.direct_video = false;
++    failed_writes = 1;
 +    video_poll();
++    assert(degauss_crt_only_active && degauss_hdmi_power_pending && last_power == 0x10);
++    const int entry_attempts = power_attempts;
++    now_ms += 249;
++    video_poll();
++    assert(power_attempts == entry_attempts);
++    ++now_ms;
++    video_poll();
++    assert(!degauss_hdmi_power_pending && power_attempts == entry_attempts + 1);
 +    assert(degauss_crt_only_active && last_power == 0x50);
 +
 +    const int writes = write_count;
@@ -230,13 +285,25 @@ index 0000000..432c9f2
 +    video_poll(); // reconnect with stable HPD and monitor sense
 +    assert(!irq && last_power == 0x50 && reinits == 0);
 +    owned = false; // ordinary exit and native handovers use the same ownership bit
-+    sense = -1; // a transient HDMI status read failure must not lose reconnect
++    failed_writes = 1;
++    irq = 0xc0; // a fresh HPD interrupt must not re-init before power is restored
 +    video_poll();
-+    assert(!degauss_crt_only_active && last_power == 0x10 && reinits == 0);
-+    assert(degauss_hdmi_reconnect_pending);
++    assert(!degauss_crt_only_active && degauss_hdmi_power_pending);
++    assert(!irq && last_power == 0x50 && reinits == 0);
++    sense = -1; // the status read can fail even after power is restored
++    now_ms += 250;
++    video_poll();
++    assert(last_power == 0x10 && reinits == 0);
++    const int failed_sense_reads = sense_reads;
 +    sense = 0x60;
-+    video_hdmi_power(1);
-+    assert(!degauss_hdmi_reconnect_pending && reinits == 1);
++    now_ms += 249;
++    video_poll();
++    assert(sense_reads == failed_sense_reads && reinits == 0);
++    ++now_ms;
++    video_poll(); // must recover with idle power timer disabled and no new IRQ
++    assert(!degauss_hdmi_power_pending && reinits == 1);
++    video_poll();
++    assert(sense_reads == failed_sense_reads + 1 && reinits == 1);
 +
 +    irq_supported = false; // boards without hotplug IRQ still need the setting
 +    native = false;

@@ -395,6 +395,40 @@ fn run_favourites(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_system_by_index(0);
     app.leave_splash();
     assert!(app.in_favorites());
+    let logos = root.join("logos");
+    std::fs::create_dir_all(&logos).unwrap();
+    let cover = logos.join("chosen.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &cover,
+    )
+    .unwrap();
+    app.logo_dir = Some(logos);
+    let original = Place::Dir(favorites.join("Original")).key();
+    app.set_folder_image("Favorites", &original, Some(&cover))
+        .unwrap();
+    for (layout, has_cover, heart) in [
+        (Layout::MultiList, false, true),
+        (Layout::Gallery, true, false),
+    ] {
+        app.set_layout(layout);
+        select_row_named(&mut app, "Original");
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.game_list.window();
+        let row = app
+            .rows
+            .row_data(app.game_list.selected() - range.start)
+            .unwrap();
+        assert_eq!(
+            (row.has_cover, row.favorite),
+            (has_cover, heart),
+            "{}",
+            layout.label()
+        );
+    }
+    app.set_folder_image("Favorites", &original, None).unwrap();
+    app.set_layout(Layout::Details);
     enter(&mut app, "Original");
     assert!(app.folders_last);
     choose(&mut app, FOLDER_NAMES, 1);

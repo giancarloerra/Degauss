@@ -22471,7 +22471,7 @@ impl App {
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     row.favorite,
-                                    inside_favorites && row.is_folder() && row.cover.is_none(),
+                                    inside_favorites && row.is_folder() && !has_cover,
                                 ),
                                 cover,
                                 has_cover,

@@ -20,10 +20,10 @@ struct Element {
     range: Range<usize>,
     inner: Range<usize>,
     value: String,
-    follows_acorn_build: bool,
+    follows_media_build: bool,
 }
 
-const FOLLOW_ACORN_BUILD: &str = "degauss-follow-core";
+const FOLLOW_MEDIA_BUILD: &str = "degauss-follow-core";
 
 fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
     let mut reader = Reader::from_str(text);
@@ -58,18 +58,18 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                         return Err(bad("core and setname must be root children"));
                     }
                     let is_rbf = e.name().as_ref().eq_ignore_ascii_case("rbf");
-                    let mut follows_acorn_build = false;
+                    let mut follows_media_build = false;
                     for attribute in e.attributes() {
                         let attribute = attribute.map_err(|e| bad(&e.to_string()))?;
-                        if is_rbf && attribute.key.as_ref() == FOLLOW_ACORN_BUILD {
-                            follows_acorn_build = attribute.value.as_ref() == "1";
+                        if is_rbf && attribute.key.as_ref() == FOLLOW_MEDIA_BUILD {
+                            follows_media_build = attribute.value.as_ref() == "1";
                         }
                     }
                     active = Some((
                         is_rbf,
                         start,
                         reader.buffer_position() as usize,
-                        follows_acorn_build,
+                        follows_media_build,
                     ));
                 }
                 depth += 1;
@@ -78,7 +78,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                 depth = depth
                     .checked_sub(1)
                     .ok_or_else(|| bad("unexpected closing element"))?;
-                if let Some((is_rbf, begin, inner, follows_acorn_build)) = active.take() {
+                if let Some((is_rbf, begin, inner, follows_media_build)) = active.take() {
                     let value = quick_xml::escape::unescape(text[inner..start].trim())
                         .map_err(|e| bad(&e.to_string()))?
                         .into_owned();
@@ -93,7 +93,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                         range: begin..reader.buffer_position() as usize,
                         inner: inner..start,
                         value,
-                        follows_acorn_build,
+                        follows_media_build,
                     });
                 }
             }
@@ -181,13 +181,18 @@ const ACORN_MEDIA_CORES: [(&str, &str); 2] = [
     ("AcornAtom", "AcornAtom_DualSDRAM"),
     ("AcornElectron", "AcornElectron_DualSDRAM"),
 ];
+const SHARP_MZ_2500: (&str, &str) = ("SharpMZ2500", "SharpMZ2500_DualSDRAM");
+const VIDEO_BRAIN: (&str, &str) = ("VideoBrain", "VideoBrain_DualSDRAM");
 
-/// An undated Acorn reference must resolve to the installed build before
-/// checking media support. A user-pinned dated reference stays fixed.
-pub(crate) fn undated_acorn_media_core(stem: &str) -> bool {
-    ACORN_MEDIA_CORES.iter().any(|(standard, dual)| {
-        stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
-    })
+/// Resolve these undated families before checking their media build dates.
+/// An explicitly dated reference stays fixed.
+pub(crate) fn undated_media_core(stem: &str) -> bool {
+    ACORN_MEDIA_CORES
+        .into_iter()
+        .chain([SHARP_MZ_2500, VIDEO_BRAIN])
+        .any(|(standard, dual)| {
+            stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
+        })
 }
 
 fn acorn_media_family(stem: &str) -> Option<&'static str> {
@@ -554,13 +559,13 @@ pub(crate) fn apply_with_reference(
     Ok(result)
 }
 
-/// Main ignores this optional attribute. Degauss uses it only on generated
-/// Acorn favourites that must name an exact file to avoid a native collision.
-pub(crate) fn follow_acorn_build(text: &mut String, path: &Path) -> Result<()> {
+/// Main ignores this optional attribute. Degauss uses it for generated
+/// favourites that must name an exact file to avoid a native collision.
+pub(crate) fn follow_media_build(text: &mut String, path: &Path) -> Result<()> {
     let (rbf, _) = elements(text, path)?;
     text.insert_str(
         rbf.inner.start - 1,
-        &format!(r#" {FOLLOW_ACORN_BUILD}="1""#),
+        &format!(r#" {FOLLOW_MEDIA_BUILD}="1""#),
     );
     Ok(())
 }
@@ -610,8 +615,8 @@ fn recognized_family(
                 .unwrap_or("");
             same_core_identity(configured, actual)
         });
-    let generated_dated_acorn = rbf.follows_acorn_build
-        && undated_acorn_media_core(configured_stem)
+    let generated_dated_media_core = rbf.follows_media_build
+        && undated_media_core(configured_stem)
         && Path::new(&rbf.value)
             .file_name()
             .and_then(|name| name.to_str())
@@ -621,7 +626,7 @@ fn recognized_family(
             })
         && Path::new(&rbf.value).parent() == Path::new(&system.rbf).parent();
     let standard_match = (rbf.value.eq_ignore_ascii_case(&system.rbf)
-        || generated_dated_acorn
+        || generated_dated_media_core
         || rule_match
         || crate::core_choices::is_unstable_reference(system, &rbf.value))
         && match (
@@ -669,9 +674,9 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
     };
     let (name, requirements): (&str, &[(&str, &[&str])]) = if matches("TK2000") {
         ("TK2000", &[("20261107", &["ct2"])])
-    } else if matches("SharpMZ2500") {
+    } else if matches(SHARP_MZ_2500.0) || matches(SHARP_MZ_2500.1) {
         ("Sharp MZ-2500 / MZ-2520", &[("20261113", &["hdm"])])
-    } else if matches("VideoBrain") {
+    } else if matches(VIDEO_BRAIN.0) || matches(VIDEO_BRAIN.1) {
         ("VideoBrain", &[("20261113", &["vbc"])])
     } else {
         match acorn_media_family(stem) {

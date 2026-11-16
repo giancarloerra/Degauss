@@ -193,7 +193,7 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Can a saved MGL keep the undated Acorn reference without selecting a
+/// Can a saved MGL keep an undated reference without selecting a
 /// different build from the one used for media validation?
 pub(crate) fn native_reference_selects(
     root: &Path,
@@ -270,17 +270,10 @@ pub(crate) fn standard_reference_after(
         .and_then(|name| name.to_str())
         .filter(|name| {
             minimum.is_some()
-                || [
-                    "N64",
-                    "NeoGeo",
-                    "SharpMZ",
-                    "SharpMZ2500",
-                    "TK2000",
-                    "VideoBrain",
-                ]
-                .iter()
-                .any(|core| name.eq_ignore_ascii_case(core))
-                || core_variants::undated_acorn_media_core(name)
+                || ["N64", "NeoGeo", "SharpMZ", "TK2000"]
+                    .iter()
+                    .any(|core| name.eq_ignore_ascii_case(core))
+                || core_variants::undated_media_core(name)
         })
     else {
         return Ok(Some(reference.to_string()));
