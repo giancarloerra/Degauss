@@ -860,7 +860,16 @@ async function settingsPage(epoch) {
       const actions = el('div', { class: 'actions' });
       if (option.adjustable && option.id !== 'WebMode') {
         for (const [label, delta] of [['−', -1], ['+', 1]]) {
-          const change = button(label, async () => { const response = await edit('option-adjust', { option: option.id, delta }); if (response.job) { const result = await waitJob(response.job); if (Object.keys(result.source_errors || {}).length) throw new Error(Object.values(result.source_errors).join('\n')); } applyState(await command('state')); await renderRoute(); }); change.setAttribute('aria-label', option.name + (delta < 0 ? ': previous' : ': next')); actions.append(change);
+          const change = button(label, async () => {
+            const response = await edit('option-adjust', { option: option.id, delta });
+            if (response.job) {
+              const result = await waitJob(response.job);
+              if (Object.keys(result.source_errors || {}).length) throw new Error(Object.values(result.source_errors).join('\n'));
+              if (result.warnings) throw new Error(result.warnings);
+            }
+            applyState(await command('state')); await renderRoute();
+          });
+          change.setAttribute('aria-label', option.name + (delta < 0 ? ': previous' : ': next')); actions.append(change);
         }
       } else {
         const run = optionEditor(option.id);

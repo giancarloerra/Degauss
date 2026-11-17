@@ -429,6 +429,8 @@ pub struct Settings {
     /// Absent keeps the existing metadata-based Arcade names.
     #[serde(default)]
     pub use_mra_filenames: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_missing_arcade_roms: Option<bool>,
     /// Whether folder rows receive Degauss's outer `[ name ]` marker.
     /// Absent preserves the marker used by earlier releases.
     #[serde(default)]

@@ -65,6 +65,7 @@ pub enum OptionId {
     ArtworkScale,
     ShowHidden,
     ShowEmpty,
+    HideMissingArcadeRoms,
     /// Show the group holding the cores that are not games.
     ShowOther,
     /// Show the group holding the test and measurement cores.
@@ -187,6 +188,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowScripts,
     OptionId::ShowExplore,
     OptionId::ShowEmpty,
+    OptionId::HideMissingArcadeRoms,
     OptionId::ShowHidden,
     OptionId::ResetHidden,
     OptionId::Spacer,
@@ -342,6 +344,7 @@ impl OptionsPage {
                 OptionId::ShowScripts,
                 OptionId::ShowExplore,
                 OptionId::ShowEmpty,
+                OptionId::HideMissingArcadeRoms,
                 OptionId::ShowHidden,
                 OptionId::ResetHidden,
                 OptionId::RebuildCache,
@@ -403,6 +406,7 @@ impl OptionId {
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
+            OptionId::HideMissingArcadeRoms => "Hide Arcade Games with Missing ROMs",
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
             OptionId::ShowCores => "Show Cores",
@@ -522,6 +526,7 @@ impl OptionId {
             OptionId::ShowEmpty => {
                 "Show systems and folders with no games. Manually hidden items stay hidden."
             }
+            OptionId::HideMissingArcadeRoms => "Hide top-level Arcade games whose required ROM ZIP is missing. Rebuild the Arcade list after changing ROMs. Subfolders are unchanged.",
             OptionId::ShowOther => "Show the Other category and its installed cores.",
             OptionId::ShowUtility => "Show the Utility category for test patterns and measurement cores.",
             OptionId::ShowCores => {

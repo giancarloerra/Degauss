@@ -9,6 +9,7 @@
 slint::include_modules!();
 
 mod app;
+mod arcade_roms;
 mod artwork_pack;
 mod artwork_source;
 mod browse;

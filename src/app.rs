@@ -400,6 +400,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ScrollTitleStrip
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
+        | OptionId::HideMissingArcadeRoms
         | OptionId::ShowOther
         | OptionId::ShowUtility
         | OptionId::ShowCores
@@ -4417,6 +4418,7 @@ pub struct App {
     folders_last: bool,
     /// Where the written-down copy of the card lives.
     cache_dir: PathBuf,
+    enabling_arcade_rom_filter: bool,
     /// What is known about every system, read once at startup.
     index: Option<crate::cache::Index>,
     /// Installed direct core launchers from the same shallow menu walk used
@@ -4940,6 +4942,7 @@ impl App {
             corrected_counts: HashMap::new(),
             total_games: 0,
             cache_dir,
+            enabling_arcade_rom_filter: false,
             index: None,
             core_catalogue,
             core_category: None,
@@ -7828,6 +7831,13 @@ impl App {
             })?;
             library.list(place, self.show_empty)?.0
         };
+        if self.settings.hide_missing_arcade_roms == Some(true)
+            && self.open_system.as_deref() == Some("Arcade")
+        {
+            if let Some(config) = &self.opened_config {
+                crate::arcade_roms::filter(&self.cache_dir, place, config, &mut rows)?;
+            }
+        }
         if let Some(provider) = self.artwork_provider.as_ref() {
             provider.apply_prepared(&mut rows);
             rows.sort_by(|left, right| {
@@ -11706,6 +11716,24 @@ impl App {
             .as_ref()
             .is_some_and(|storage| storage.rebuilding.is_some());
         let finished = self.build.take().expect("active build");
+        if std::mem::take(&mut self.enabling_arcade_rom_filter) && !finished.cancelling {
+            match crate::arcade_roms::read(&self.cache_dir) {
+                Ok(Some(_)) => {
+                    self.settings.hide_missing_arcade_roms = Some(true);
+                    if !self.save_settings() {
+                        let problem = self
+                            .message
+                            .take()
+                            .unwrap_or_else(|| "Could not save Arcade ROM filter".into());
+                        self.build_warning(problem);
+                    }
+                }
+                Ok(None) => self.build_warning(
+                    "Arcade ROM check was not created; the filter remains Off".into(),
+                ),
+                Err(error) => self.build_warning(error.to_string()),
+            }
+        }
         self.restore_unfinished_storage();
         if let Err(error) = crate::cache::save_index(&self.cache_dir, &finished.index) {
             self.build_warning(format!("Cache index not written: {error}"));
@@ -14161,6 +14189,32 @@ impl App {
                 // Its height belongs to the list when it is not there.
                 self.apply_geometry();
             }
+            OptionId::HideMissingArcadeRoms => {
+                if self.settings.hide_missing_arcade_roms == Some(true) {
+                    self.settings.hide_missing_arcade_roms = Some(false);
+                } else {
+                    match crate::arcade_roms::read(&self.cache_dir) {
+                        Ok(Some(_)) => self.settings.hide_missing_arcade_roms = Some(true),
+                        Ok(None) if self.all_systems.iter().any(|s| s.def.id == "Arcade") => {
+                            self.rebuild_ordinary_system("Arcade");
+                            self.enabling_arcade_rom_filter = self.build.is_some();
+                            return;
+                        }
+                        Ok(None) => {
+                            self.message = Some("No Arcade library is available to check.".into());
+                            return;
+                        }
+                        Err(error) => {
+                            self.message = Some(error.to_string());
+                            return;
+                        }
+                    }
+                }
+                if self.open_system.as_deref() == Some("Arcade") && self.browsing == Browsing::Games
+                {
+                    self.relist_here_preserving_game_filters();
+                }
+            }
             OptionId::ShowEmpty => {
                 self.show_empty = !self.show_empty;
                 self.settings.show_empty = Some(self.show_empty);
@@ -14358,6 +14412,9 @@ impl App {
             OptionId::ScreenRotation => self.global_screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
+            OptionId::HideMissingArcadeRoms => {
+                on_off(self.settings.hide_missing_arcade_roms.unwrap_or(false))
+            }
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
             OptionId::ShowCores => on_off(self.show_cores),

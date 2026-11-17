@@ -14567,6 +14567,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     folder_options_acceptance_tests::run(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_mra_filename_display_flow(&root, window.clone());
+    web_acceptance_tests::arcade_rom_visibility(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());

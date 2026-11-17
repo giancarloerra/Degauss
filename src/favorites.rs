@@ -437,7 +437,15 @@ pub(crate) fn read_mgl_text(path: &Path, what: &'static str) -> Result<String> {
 /// path is the game and the earlier ones are what it is fed with.
 pub(crate) fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorReference> {
     let text = read_mgl_text(path, what)?;
-    let mut reader = Reader::from_str(&text);
+    descriptor_reference_text(path, what, &text)
+}
+
+pub(crate) fn descriptor_reference_text(
+    path: &Path,
+    what: &'static str,
+    text: &str,
+) -> Result<DescriptorReference> {
+    let mut reader = Reader::from_str(text);
     let mut files = Vec::new();
     let mut active = None;
     let mut value = String::new();

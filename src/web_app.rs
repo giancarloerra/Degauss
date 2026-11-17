@@ -853,7 +853,11 @@ impl App {
                 if let Some(error) = adjustment_error {
                     return Err(web_error(error));
                 }
-                if std::mem::take(&mut self.artwork_default_changed) {
+                if id == OptionId::HideMissingArcadeRoms && self.enabling_arcade_rom_filter {
+                    let id = self.web_new_job("Checking Arcade ROM ZIPs");
+                    self.web.rebuild_job = Some(id);
+                    json!({"job":id})
+                } else if std::mem::take(&mut self.artwork_default_changed) {
                     self.resolve_artwork_sources(SourceResolutionAction::ArtworkDefaultChanged);
                     let id = self.web_new_job("Applying Artwork Pack default");
                     self.web.option_job = Some(id);

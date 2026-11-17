@@ -1627,6 +1627,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Core Updates | Off by default. Show every installed core and uninstalled cores selected by this MiSTer's configured Downloader databases |
 | Library | Show Explore Games | Off by default. Show Explore after Last Played on Home. Edit Home can also show or hide it |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
+| Library | Hide Arcade Games with Missing ROMs | Off by default. Hide top-level Arcade games in Degauss and Web Access when a required ROM ZIP is absent. Embedded ROMs, uncertain entries and subfolders stay visible. An older index is checked the first time you switch this on; to refresh after adding or removing ROMs, open Arcade and use **X → Library → Rebuild This System List**. Switching Off restores the full list. No files are removed or ZIP contents checked. |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
 | Library | Rebuild All System Lists | Press A to read the whole card again. Run it after adding games, cores or artwork; **Actions → Library → Rebuild This System List** rebuilds just the containing system. Left and right do nothing |
