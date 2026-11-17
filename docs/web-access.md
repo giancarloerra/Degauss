@@ -255,7 +255,11 @@ current revision from their editor's read response. Commands reject unknown fiel
   override selects a compatible family.
 - **Upload:** `POST /api/v1/upload/{target}` with raw PNG/JPEG bytes, session,
   CSRF and `X-Degauss-Revision`. A game target writes its Gamelist image. A Home
-  entry/category/system target imports a logo and chooses it after validation.
+  entry, category, system or library-folder target imports a logo and chooses
+  it after validation. On a folder, **Choose image** can also use an existing
+  logo; **Use default image** clears only that folder's assignment. The
+  `image-choose` command uses the same folder target and the handle from
+  `images`; use `image: null` to clear it.
 
 Web state is stored beside Degauss settings in `web-access/`, including the salted
 password hash, remembered-session records and HTTPS identity/private key. Keep

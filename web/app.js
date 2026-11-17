@@ -504,7 +504,7 @@ async function systemActions(item) {
   modal(item.name, el('div', { class: 'actions' }, button('Open', () => { closeModal(); go('browse', { system: item.system }); }), button('Add to Home', () => addHome(item)), button('Game data source', () => gameData(item.system)), button('Core choice', () => coreChoices(item.system)), button('Choose image', () => chooseImage(item.id)), button('Change MiSTer layout', () => chooseView(item.id)), button('Folder options', () => folderOptions(item.id)), button('Rebuild system', async () => { closeModal(); await operation('rebuild', { system: item.system }); await renderRoute(); }), button('Scrape system', () => scrapeConfirm(item.id, item.name)), button('Hide system', async () => { await edit('hide', { target: item.id, hidden: true }); closeModal(); await renderRoute(); })));
 }
 async function folderActions(item, system) {
-  modal(item.name, el('div', { class: 'actions' }, button('Add to Home', () => addHome(item)), button('Folder options', () => folderOptions(item.id)), button('Change MiSTer layout', () => chooseView(item.id)), button('Scrape folder', () => scrapeConfirm(item.id, item.name)), system ? button('System actions', () => systemActions(system)) : null));
+  modal(item.name, el('div', { class: 'actions' }, button('Add to Home', () => addHome(item)), button('Folder options', () => folderOptions(item.id)), button('Choose image', () => chooseImage(item.id)), button('Change MiSTer layout', () => chooseView(item.id)), button('Scrape folder', () => scrapeConfirm(item.id, item.name)), system ? button('System actions', () => systemActions(system)) : null));
 }
 async function renderRoute() {
   if (!state.csrf) return; const epoch = ++state.epoch;
@@ -860,7 +860,19 @@ async function settingsPage(epoch) {
       const actions = el('div', { class: 'actions' });
       if (option.adjustable && option.id !== 'WebMode') {
         for (const [label, delta] of [['−', -1], ['+', 1]]) {
-          const change = button(label, async () => { const response = await edit('option-adjust', { option: option.id, delta }); if (response.job) { const result = await waitJob(response.job); if (Object.keys(result.source_errors || {}).length) throw new Error(Object.values(result.source_errors).join('\n')); } applyState(await command('state')); await renderRoute(); }); change.setAttribute('aria-label', option.name + (delta < 0 ? ': previous' : ': next')); actions.append(change);
+          const change = button(label, async () => {
+            const response = await edit('option-adjust', { option: option.id, delta });
+            try {
+              if (response.job) {
+                const result = await waitJob(response.job);
+                if (Object.keys(result.source_errors || {}).length) throw new Error(Object.values(result.source_errors).join('\n'));
+                if (result.warnings) throw new Error(result.warnings);
+              }
+            } finally {
+              applyState(await command('state')); await renderRoute();
+            }
+          });
+          change.setAttribute('aria-label', option.name + (delta < 0 ? ': previous' : ': next')); actions.append(change);
         }
       } else {
         const run = optionEditor(option.id);

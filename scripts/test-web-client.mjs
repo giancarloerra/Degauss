@@ -47,6 +47,29 @@ function section(from, to) {
   return source.slice(start, end);
 }
 
+test('web settings re-read the applied option before reporting a failed or incomplete Arcade check', async () => {
+  for (const outcome of ['success', 'warning', 'failed']) {
+    const events = [];
+    let adjust;
+    const node = () => ({ append() {}, setAttribute() {} });
+    const context = vm.createContext({
+      state: { epoch: 1 }, header() {}, $: node, el: node, scraperSettings() {}, controllersEditor() {},
+      button(label, action) { if (label === '+') adjust = action; return node(); },
+      command: async action => action === 'options' ? { pages: [{ key: 'library', items: [
+        { id: 'HideMissingArcadeRoms', adjustable: true },
+      ] }] } : (events.push(action), {}),
+      edit: async () => ({ job: 1 }),
+      waitJob: async () => { if (outcome === 'failed') throw new Error('index unavailable'); return { warnings: outcome === 'warning' ? 'index warning' : '' }; },
+      applyState() { events.push('apply'); }, renderRoute() { events.push('render'); },
+    });
+    vm.runInContext(section('async function settingsPage(', '\nfunction optionEditor('), context);
+    await context.settingsPage(1);
+    if (outcome === 'success') await adjust();
+    else await assert.rejects(adjust(), outcome === 'failed' ? /index unavailable/ : /index warning/);
+    assert.deepEqual(events, ['state', 'apply', 'render']);
+  }
+});
+
 test('A missing selected theme is visibly reported on the Themes page', async () => {
   const displayed = [];
   const context = vm.createContext({

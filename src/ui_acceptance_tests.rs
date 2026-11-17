@@ -12158,6 +12158,41 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .position(|row| row.kind == browse::Kind::Enter(folder_place.clone()))
             .expect("the folder is listed")
     };
+    let folder = folder_at(&app);
+    app.game_list.select(folder);
+    app.open_context();
+    assert!(app
+        .context_actions
+        .iter()
+        .any(|entry| entry == CHANGE_CATEGORY_IMAGE));
+    app.open_category_image_picker();
+    assert_eq!(app.screen, Screen::CategoryImage);
+    let choice = app
+        .menu
+        .iter()
+        .position(|name| name == "custom.png")
+        .unwrap();
+    app.menu_list.select(choice);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.here[folder_at(&app)].cover.as_ref(), Some(&custom));
+    let system = app.open_system.as_deref().unwrap();
+    let persisted = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(
+        persisted.folder_preferences[system][&folder_place.key()]
+            .image
+            .as_deref(),
+        Some("custom.png"),
+    );
+    let target = app
+        .selected_image_target()
+        .expect("folder remains selected");
+    app.clear_category_image(&target);
+    assert_eq!(app.here[folder_at(&app)].cover.as_ref(), Some(&image));
+    assert!(Settings::load(&app.settings_path)
+        .unwrap()
+        .folder_preferences
+        .is_empty());
 
     // Only the picture is taken: the row is still the folder, under its
     // own name, with its own count, and nothing about it is a favourite.
@@ -14532,6 +14567,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     folder_options_acceptance_tests::run(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_mra_filename_display_flow(&root, window.clone());
+    web_acceptance_tests::arcade_rom_visibility(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());

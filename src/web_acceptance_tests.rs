@@ -33,6 +33,136 @@ fn completed(app: &mut App, value: JsonValue) -> JsonValue {
     }
 }
 
+pub(super) fn arcade_rom_visibility(parent: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = parent.join("arcade-rom-visibility");
+    let games = root.join("_Arcade");
+    let organized = games.join("_Organized");
+    std::fs::create_dir_all(&organized).unwrap();
+    let descriptor = r#"<misterromdescription><rbf>Fixture</rbf><rom index="0" zip="example.zip"><part name="a.bin"/></rom></misterromdescription>"#;
+    std::fs::write(games.join("Missing.mra"), descriptor).unwrap();
+    std::fs::write(organized.join("Same.mra"), descriptor).unwrap();
+    std::fs::write(
+        games.join("Embedded.mra"),
+        "<misterromdescription><rom><part>00</part></rom></misterromdescription>",
+    )
+    .unwrap();
+    std::fs::write(games.join("Uncertain.mra"), "<broken").unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window,
+        Settings::default(),
+        &["Arcade"],
+        "_Arcade",
+    );
+    app.config
+        .game_roots
+        .insert(0, root.to_string_lossy().into_owned());
+    app.open_system_by_index(0);
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.message = None;
+    let place = Place::Dir(games.clone());
+    let has_missing = |app: &mut App| {
+        app.listing(&place)
+            .unwrap()
+            .iter()
+            .any(|r| r.name.starts_with("Missing"))
+    };
+    let web_names = |app: &mut App| {
+        let job = command(app, json!({"action":"browse","system":"Arcade"}));
+        completed(app, job)["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(has_missing(&mut app));
+    assert!(web_names(&mut app).iter().any(|n| n.starts_with("Missing")));
+    // An existing installation has an ordinary Arcade index without the
+    // new auxiliary file. Cancelling the first check must leave it Off.
+    let sidecar = app.cache_dir.join(crate::arcade_roms::FILE);
+    if sidecar.exists() {
+        std::fs::remove_file(&sidecar).unwrap();
+    }
+    let toggle = OptionId::HideMissingArcadeRoms;
+    app.screen = Screen::Options;
+    // A settled Options screen must show a failed enable without a second input.
+    let systems = std::mem::take(&mut app.all_systems);
+    app.dirty = false;
+    app.adjust_option_value(toggle, 1);
+    assert_eq!(
+        app.message.take().as_deref(),
+        Some("No Arcade library is available to check.")
+    );
+    assert!(app.dirty, "the missing-library error must request a redraw");
+    app.all_systems = systems;
+    std::fs::write(&sidecar, b"not an index").unwrap();
+    let read_error = crate::arcade_roms::read(&app.cache_dir)
+        .unwrap_err()
+        .to_string();
+    app.dirty = false;
+    app.adjust_option_value(toggle, 1);
+    assert_eq!(app.message.take().as_deref(), Some(read_error.as_str()));
+    assert!(app.dirty, "the index read error must request a redraw");
+    assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
+    std::fs::remove_file(&sidecar).unwrap();
+    app.adjust_option_value(toggle, 1);
+    assert!(app.enabling_arcade_rom_filter && app.build.is_some());
+    app.cancel_index();
+    app.finish_background_work_for_headless();
+    assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Options);
+    // A failed cache write must not look like a successful web option change.
+    let failed = edit(
+        &mut app,
+        json!({"action":"option-adjust","option":"HideMissingArcadeRoms","delta":1}),
+    );
+    let saved = root.join("saved-index");
+    std::fs::rename(&app.cache_dir, &saved).unwrap();
+    std::fs::write(&app.cache_dir, b"not a directory").unwrap();
+    app.finish_background_work_for_headless();
+    let job = command(&mut app, json!({"action":"job","id":failed["job"]}));
+    assert_eq!(job["state"], "failed");
+    assert_eq!(job["error"]["code"], "index");
+    assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
+    std::fs::remove_file(&app.cache_dir).unwrap();
+    std::fs::rename(saved, &app.cache_dir).unwrap();
+    app.handle(Action::Quit);
+    let started = edit(
+        &mut app,
+        json!({"action":"option-adjust","option":"HideMissingArcadeRoms","delta":1}),
+    );
+    assert!(started["job"].is_number());
+    app.finish_background_work_for_headless();
+    completed(&mut app, started);
+    assert_eq!(
+        Settings::load(&app.settings_path)
+            .unwrap()
+            .hide_missing_arcade_roms,
+        Some(true)
+    );
+    assert!(!has_missing(&mut app));
+    let names = web_names(&mut app);
+    assert!(!names.iter().any(|n| n.starts_with("Missing")));
+    assert!(names.iter().any(|n| n.starts_with("Embedded")));
+    assert!(names.iter().any(|n| n.starts_with("Uncertain")));
+    assert!(app
+        .listing(&Place::Dir(organized))
+        .unwrap()
+        .iter()
+        .any(|r| r.name.starts_with("Same")));
+    app.adjust_option_value(toggle, -1);
+    assert!(app.build.is_none() && has_missing(&mut app));
+    assert!(web_names(&mut app).iter().any(|n| n.starts_with("Missing")));
+    assert_eq!(
+        std::fs::read_to_string(games.join("Missing.mra")).unwrap(),
+        descriptor
+    );
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run(parent: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = parent.join("web-access");
     let games = root.join("games/NES");

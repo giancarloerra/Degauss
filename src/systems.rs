@@ -1837,6 +1837,7 @@ mod tests {
             ("BasicMasterL3", "d88", "s", 0, Some(1)),
             ("BasicMasterL3", "l3", "s", 2, None),
             ("SharpMZ2500", "d88", "s", 0, Some(1)),
+            ("SharpMZ2500", "hdm", "s", 0, Some(1)),
             ("SharpMZ2500", "mzt", "f", 1, Some(1)),
             ("SharpMZ2500", "bin", "f", 2, None),
             ("SharpMZ2500", "dat", "f", 2, None),
@@ -2513,6 +2514,7 @@ extensions = ["md", "bin"]
             ("UKNC", "vhd", "s", 2),
             ("IQ151", "dsk", "s", 1),
             ("VideoBrain", "bin", "f", 1),
+            ("VideoBrain", "vbc", "f", 1),
             ("BasicMasterJr", "bmt", "f", 1),
             ("BasicMasterJr", "bin", "f", 1),
             ("BasicMasterJr", "sav", "f", 1),
@@ -2589,6 +2591,12 @@ extensions = ["md", "bin"]
             ("PC6001", "bin", "f", 2),
             ("PC6001", "60", "f", 2),
             ("PC6001", "d88", "s", 0),
+            ("PC8001", "d88", "s", 0),
+            ("PC8001", "cmt", "f", 1),
+            ("PC8001", "t88", "f", 1),
+            ("PC8001", "n80", "f", 3),
+            ("PC8001", "rom", "f", 2),
+            ("PC8001", "bin", "f", 2),
             ("MTX512", "mtx", "f", 1),
             ("MTX512", "wav", "f", 1),
             ("MTX512", "mfl", "s", 1),
@@ -2602,6 +2610,10 @@ extensions = ["md", "bin"]
             ("AcornElectron", "rom", "f", 3),
             ("AcornElectron", "adf", "s", 1),
             ("AcornElectron", "adl", "s", 1),
+            ("AcornElectron", "adm", "s", 1),
+            ("AcornElectron", "ssd", "s", 1),
+            ("AcornElectron", "dsd", "s", 1),
+            ("SharpMZ2500", "hdm", "s", 0),
             ("PC88", "d88", "s", 0),
             ("PC88", "cmt", "s", 4),
             ("PC88", "t88", "s", 4),
@@ -2719,6 +2731,7 @@ extensions = ["md", "bin"]
         let card = temp_dir("new-system-library-data");
         for (id, extension) in [
             ("PC6001", "rom"),
+            ("PC8001", "rom"),
             ("MTX512", "mtx"),
             ("AcornAtom", "uef"),
             ("AcornElectron", "rom"),
@@ -2813,6 +2826,7 @@ extensions = ["md", "bin"]
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
             ("PC6001", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/>"),
+            ("PC8001", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/>"),
             ("MTX512", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.mfl\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"B.mfl\"/>"),
             ("AcornAtom", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.vhd\"/><file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.uef\"/>"),
             ("AcornElectron", "<file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.adl\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Cartridge.rom\"/>"),
@@ -2863,6 +2877,7 @@ extensions = ["md", "bin"]
         std::fs::create_dir_all(card.join("_Console")).unwrap();
         for (id, date) in [
             ("PC6001", "20261112"),
+            ("PC8001", "20261114"),
             ("MTX512", "20261108"),
             ("AcornAtom", "20261113"),
             ("AcornElectron", "20261111"),
@@ -2884,6 +2899,7 @@ extensions = ["md", "bin"]
         let index = CoreIndex::read(&card);
         for id in [
             "PC6001",
+            "PC8001",
             "MTX512",
             "AcornAtom",
             "AcornElectron",

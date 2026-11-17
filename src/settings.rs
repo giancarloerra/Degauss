@@ -268,6 +268,9 @@ pub struct FolderPreferences {
     pub folders_last: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_name_display: Option<GameNameDisplay>,
+    /// Image filename in Degauss's existing logos directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl FolderPreferences {
@@ -275,6 +278,7 @@ impl FolderPreferences {
         self.screen_rotation.is_none()
             && self.folders_last.is_none()
             && self.game_name_display.is_none()
+            && self.image.is_none()
     }
 }
 
@@ -425,6 +429,8 @@ pub struct Settings {
     /// Absent keeps the existing metadata-based Arcade names.
     #[serde(default)]
     pub use_mra_filenames: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_missing_arcade_roms: Option<bool>,
     /// Whether folder rows receive Degauss's outer `[ name ]` marker.
     /// Absent preserves the marker used by earlier releases.
     #[serde(default)]

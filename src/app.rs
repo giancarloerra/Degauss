@@ -400,6 +400,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ScrollTitleStrip
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
+        | OptionId::HideMissingArcadeRoms
         | OptionId::ShowOther
         | OptionId::ShowUtility
         | OptionId::ShowCores
@@ -1966,7 +1967,7 @@ impl ScraperTerminal {
     }
 }
 
-/// Choose a fixed picture for the category or system under the cursor.
+/// Choose a fixed picture for the category, system or folder under the cursor.
 const CHANGE_CATEGORY_IMAGE: &str = "Change Image";
 
 /// Remove only the copy managed by the picker, revealing the ordinary
@@ -1976,35 +1977,66 @@ const CLEAR_CATEGORY_IMAGE: &str = "Clear Custom Image";
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImageTarget {
     Category(String),
-    System { id: String, name: String },
+    System {
+        id: String,
+        name: String,
+    },
+    Folder {
+        system: String,
+        place: String,
+        name: String,
+    },
 }
 
 impl ImageTarget {
     fn label(&self) -> &str {
         match self {
-            Self::Category(name) | Self::System { name, .. } => name,
+            Self::Category(name) | Self::System { name, .. } | Self::Folder { name, .. } => name,
         }
     }
 
-    fn has_override(&self, logo_dir: &Path) -> bool {
+    fn has_override(&self, logo_dir: Option<&Path>, settings: &Settings) -> bool {
         match self {
-            Self::Category(name) => crate::category_images::has_override(logo_dir, name),
-            Self::System { id, .. } => crate::category_images::has_system_override(logo_dir, id),
+            Self::Category(name) => logo_dir
+                .is_some_and(|directory| crate::category_images::has_override(directory, name)),
+            Self::System { id, .. } => logo_dir.is_some_and(|directory| {
+                crate::category_images::has_system_override(directory, id)
+            }),
+            Self::Folder { system, place, .. } => settings
+                .folder_preferences
+                .get(system)
+                .and_then(|places| places.get(place))
+                .is_some_and(|preferences| preferences.image.is_some()),
         }
     }
 
-    fn install(&self, logo_dir: &Path, source: &Path) -> Result<PathBuf> {
-        match self {
-            Self::Category(name) => crate::category_images::install(logo_dir, name, source),
-            Self::System { id, .. } => crate::category_images::install_system(logo_dir, id, source),
+    fn change(&self, app: &mut App, source: Option<&Path>) -> Result<SaveOutcome> {
+        if let Self::Folder { system, place, .. } = self {
+            return app.set_folder_image(system, place, source);
         }
-    }
-
-    fn clear(&self, logo_dir: &Path) -> Result<bool> {
+        let logo_dir = app.logo_dir.as_deref().ok_or_else(|| {
+            DegaussError::unsupported("custom image", "the logos folder is unavailable")
+        })?;
         match self {
-            Self::Category(name) => crate::category_images::clear(logo_dir, name),
-            Self::System { id, .. } => crate::category_images::clear_system(logo_dir, id),
+            Self::Category(name) => match source {
+                Some(path) => {
+                    crate::category_images::install(logo_dir, name, path)?;
+                }
+                None => {
+                    crate::category_images::clear(logo_dir, name)?;
+                }
+            },
+            Self::System { id, .. } => match source {
+                Some(path) => {
+                    crate::category_images::install_system(logo_dir, id, path)?;
+                }
+                None => {
+                    crate::category_images::clear_system(logo_dir, id)?;
+                }
+            },
+            Self::Folder { .. } => unreachable!("folder preferences are saved separately"),
         }
+        Ok(SaveOutcome::Durable)
     }
 }
 
@@ -2277,7 +2309,7 @@ fn context_help(action: &str) -> &'static str {
         REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
         REFRESH_MISTERZINE => "Read the configured Downloader databases now.",
         ABOUT_MISTERZINE => "Read how Core Updates uses this MiSTer's Downloader settings.",
-        CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
+        CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category, system or folder.",
         CLEAR_CATEGORY_IMAGE => {
             "Remove this custom image after confirmation and restore the default image."
         }
@@ -4386,6 +4418,7 @@ pub struct App {
     folders_last: bool,
     /// Where the written-down copy of the card lives.
     cache_dir: PathBuf,
+    enabling_arcade_rom_filter: bool,
     /// What is known about every system, read once at startup.
     index: Option<crate::cache::Index>,
     /// Installed direct core launchers from the same shallow menu walk used
@@ -4909,6 +4942,7 @@ impl App {
             corrected_counts: HashMap::new(),
             total_games: 0,
             cache_dir,
+            enabling_arcade_rom_filter: false,
             index: None,
             core_catalogue,
             core_category: None,
@@ -7797,6 +7831,13 @@ impl App {
             })?;
             library.list(place, self.show_empty)?.0
         };
+        if self.settings.hide_missing_arcade_roms == Some(true)
+            && self.open_system.as_deref() == Some("Arcade")
+        {
+            if let Some(config) = &self.opened_config {
+                crate::arcade_roms::filter(&self.cache_dir, place, config, &mut rows)?;
+            }
+        }
         if let Some(provider) = self.artwork_provider.as_ref() {
             provider.apply_prepared(&mut rows);
             rows.sort_by(|left, right| {
@@ -9412,25 +9453,28 @@ impl App {
     /// and only the picture is taken: the row stays a folder under its own
     /// name, with its own count, and opens as one.
     ///
-    /// Inside favourites a folder is a shelf and keeps its heart. A custom
-    /// system image remains the fallback for a folder without one clear game
-    /// picture, but does not hide a picture that can be derived for the folder.
+    /// An explicit folder image comes first. Without one, Favourites keep their
+    /// heart and other folders retain the usual derived art or system fallback.
     fn derive_folder_covers(&self, rows: &mut [browse::Row]) {
-        if self.in_favorites() {
-            return;
-        }
-        let Some(cache) = self.system_cache.as_ref() else {
-            return;
-        };
+        let preferences = self
+            .open_system
+            .as_ref()
+            .and_then(|system| self.settings.folder_preferences.get(system));
         let provider = self.artwork_provider.as_ref();
         // A Pack that is unusable or not yet prepared answers nothing for
         // any game, so there is nothing under any folder to find.
-        if provider.is_some_and(|provider| !provider.covers_prepared()) {
+        let derive = self.system_cache.as_ref().filter(|_| {
+            !self.in_favorites() && provider.is_none_or(|provider| provider.covers_prepared())
+        });
+        if preferences.is_none() && derive.is_none() {
             return;
         }
         for row in rows.iter_mut() {
             if let browse::Kind::Enter(place) = &row.kind {
-                if row.below != Some(0) {
+                if let Some(path) = folder_image_path(preferences, place, self.logo_dir.as_deref())
+                {
+                    row.cover = Some(path);
+                } else if let Some(cache) = derive.filter(|_| row.below != Some(0)) {
                     row.cover =
                         derived_folder_cover(cache, place, &self.settings.hidden_paths, provider);
                 }
@@ -11672,6 +11716,27 @@ impl App {
             .as_ref()
             .is_some_and(|storage| storage.rebuilding.is_some());
         let finished = self.build.take().expect("active build");
+        if std::mem::take(&mut self.enabling_arcade_rom_filter) && !finished.cancelling {
+            let problem = match crate::arcade_roms::read(&self.cache_dir) {
+                Ok(Some(_)) => {
+                    self.settings.hide_missing_arcade_roms = Some(true);
+                    (!self.save_settings()).then(|| {
+                        self.message
+                            .take()
+                            .unwrap_or_else(|| "Could not save Arcade ROM filter".into())
+                    })
+                }
+                Ok(None) => Some("Arcade ROM check was not created; the filter remains Off".into()),
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(problem) = problem {
+                self.build_warning(problem.clone());
+                if let Some(id) = self.web.rebuild_job.take() {
+                    let details = self.message_after_build.as_deref().unwrap_or(&problem);
+                    self.web_finish_job(id, Err(WebError::new("index", details)));
+                }
+            }
+        }
         self.restore_unfinished_storage();
         if let Err(error) = crate::cache::save_index(&self.cache_dir, &finished.index) {
             self.build_warning(format!("Cache index not written: {error}"));
@@ -14127,6 +14192,36 @@ impl App {
                 // Its height belongs to the list when it is not there.
                 self.apply_geometry();
             }
+            OptionId::HideMissingArcadeRoms => {
+                self.dirty = true;
+                if self.settings.hide_missing_arcade_roms == Some(true) {
+                    self.settings.hide_missing_arcade_roms = Some(false);
+                } else {
+                    match crate::arcade_roms::read(&self.cache_dir) {
+                        Ok(Some(_)) => self.settings.hide_missing_arcade_roms = Some(true),
+                        Ok(None) if self.all_systems.iter().any(|s| s.def.id == "Arcade") => {
+                            self.index_return_screen = self.screen;
+                            self.index_terminal = None;
+                            self.index_details = false;
+                            self.rebuild_ordinary_system("Arcade");
+                            self.enabling_arcade_rom_filter = self.build.is_some();
+                            return;
+                        }
+                        Ok(None) => {
+                            self.message = Some("No Arcade library is available to check.".into());
+                            return;
+                        }
+                        Err(error) => {
+                            self.message = Some(error.to_string());
+                            return;
+                        }
+                    }
+                }
+                if self.open_system.as_deref() == Some("Arcade") && self.browsing == Browsing::Games
+                {
+                    self.relist_here_preserving_game_filters();
+                }
+            }
             OptionId::ShowEmpty => {
                 self.show_empty = !self.show_empty;
                 self.settings.show_empty = Some(self.show_empty);
@@ -14324,6 +14419,9 @@ impl App {
             OptionId::ScreenRotation => self.global_screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
+            OptionId::HideMissingArcadeRoms => {
+                on_off(self.settings.hide_missing_arcade_roms.unwrap_or(false))
+            }
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
             OptionId::ShowCores => on_off(self.show_cores),
@@ -16714,7 +16812,18 @@ impl App {
                         name: system.name().to_string(),
                     })
             }
-            Browsing::Games => None,
+            Browsing::Games => {
+                let (system, _) = self.current_folder_place()?;
+                let row = self.browse_row(self.game_list.selected())?;
+                let browse::Kind::Enter(place) = &row.kind else {
+                    return None;
+                };
+                Some(ImageTarget::Folder {
+                    system,
+                    place: place.key(),
+                    name: row.name.clone(),
+                })
+            }
         }
     }
 
@@ -16788,28 +16897,19 @@ impl App {
         let Some(target) = self.category_image_target.clone() else {
             return;
         };
-        let Some(logo_dir) = self.logo_dir.as_deref() else {
-            self.message = Some("The logos folder is unavailable.".to_string());
-            return;
-        };
-        match target.install(logo_dir, &choice.path) {
-            Ok(_) => self.refresh_category_image(),
+        match target.change(self, Some(&choice.path)) {
+            Ok(outcome) => self.finish_image_change(outcome),
             Err(error) => {
                 crate::note(&format!("custom art could not be saved: {error}"));
-                self.message =
-                    Some("That image could not be saved. Choose another PNG or JPG.".to_string());
+                self.message = Some(format!("That image could not be saved:\n{error}"));
                 self.dirty = true;
             }
         }
     }
 
     fn clear_category_image(&mut self, target: &ImageTarget) {
-        let Some(logo_dir) = self.logo_dir.as_deref() else {
-            self.message = Some("The logos folder is unavailable.".to_string());
-            return;
-        };
-        match target.clear(logo_dir) {
-            Ok(_) => self.refresh_category_image(),
+        match target.change(self, None) {
+            Ok(outcome) => self.finish_image_change(outcome),
             Err(error) => {
                 crate::note(&format!("custom art could not be cleared: {error}"));
                 self.message = Some("Degauss could not clear the custom image.".to_string());
@@ -16817,6 +16917,15 @@ impl App {
                 self.apply_geometry();
                 self.dirty = true;
             }
+        }
+    }
+
+    fn finish_image_change(&mut self, outcome: SaveOutcome) {
+        self.refresh_category_image();
+        if let SaveOutcome::InstalledWithWarning(error) = outcome {
+            self.message = Some(format!(
+                "Image choice saved, but flushing settings failed:\n{error}"
+            ));
         }
     }
 
@@ -18901,11 +19010,9 @@ impl App {
             && self
                 .browse_row(self.game_list.selected())
                 .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)));
-        let image_override = self.selected_image_target().map(|target| {
-            self.logo_dir
-                .as_deref()
-                .is_some_and(|logo_dir| target.has_override(logo_dir))
-        });
+        let image_override = self
+            .selected_image_target()
+            .map(|target| target.has_override(self.logo_dir.as_deref(), &self.settings));
         let game_data_source = context_system
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
@@ -21557,11 +21664,9 @@ impl App {
                                 return (Some(cover.to_path_buf()), row.name.clone(), false, true);
                             }
                         }
-                        // Inside favourites a folder is a shelf the user
-                        // made. It has no artwork and never will, and its
-                        // name is already the row: the mark says more.
-                        let heart =
-                            self.in_favorites() && matches!(row.kind, browse::Kind::Enter(_));
+                        let heart = self.in_favorites()
+                            && matches!(row.kind, browse::Kind::Enter(_))
+                            && row.cover.is_none();
                         // A folder's picture, when it has one, is a game's
                         // artwork too: a logo is never written into a row.
                         let game_art = row.cover.is_some();
@@ -22431,7 +22536,7 @@ impl App {
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     row.favorite,
-                                    inside_favorites && row.is_folder(),
+                                    inside_favorites && row.is_folder() && !has_cover,
                                 ),
                                 cover,
                                 has_cover,

@@ -43,10 +43,10 @@ the pinned backend and validate it before shipping another Degauss release.
 
 ## Sources and compatibility
 
-- RA Main v1.16.0: commit `69f1249065f1ff3d04f5f9242355a1d5475170fe`
-  from https://github.com/odelot/Main_MiSTer/tree/69f1249065f1ff3d04f5f9242355a1d5475170fe.
+- RA Main v1.17.0: commit `2fcf1f7cf7988c74ff76fc4536a5d1c2d13f9cd3`
+  from https://github.com/odelot/Main_MiSTer/tree/2fcf1f7cf7988c74ff76fc4536a5d1c2d13f9cd3.
 - Source archive SHA-256:
-  `81b7bf0289bb3d7aefe478a2209bea073881dac7d3d859e610ede47ddfaf5ffe`.
+  `c235a0a33b62556fc289a7bdb328a3b7821789218368ab2b74c7b444062587ec`.
 - Degauss integration base: commit `809893ddb8e3f7f40797579e0ed8178b03d558f8`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
@@ -74,6 +74,10 @@ transfer path runs. This includes PCXT's PCjr cartridge slots; hidden or disable
 selectors follow normal Main's handling. A visible but disabled match is
 skipped. Existing SNES and NES launchers that target the first loader with
 a different slot number continue to work without edits or a library rebuild.
+
+The `crt-only.patch` implements the same `degauss_crt_only` option as Standard
+Main, while leaving RetroAchievements Main's normal HDMI reconnect and
+core handling in place outside Degauss.
 The first row must accept the requested media type.
 A separate `tls.patch` changes only the active HTTP transport and
 adds a real-curl host test. It removes certificate-verification bypass, requires

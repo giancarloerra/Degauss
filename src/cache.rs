@@ -756,13 +756,17 @@ fn validate_encoded(kind: CacheKind, bytes: &[u8]) -> bool {
 /// many links to the same game; they must not turn one core into an arbitrary
 /// many-game match.
 fn build_core_game_map(cache: &SystemCache, cancelled: &AtomicBool) -> Option<CoreGameMap> {
-    build_core_game_map_observed(cache, cancelled, &mut |_| {})
+    build_core_game_map_observed(cache, cancelled, &mut |_| {}, None)
 }
 
 fn build_core_game_map_observed(
     cache: &SystemCache,
     cancelled: &AtomicBool,
     progress: &mut dyn FnMut(usize),
+    mut rom_check: Option<(
+        &mut crate::arcade_roms::Lookup,
+        &mut crate::arcade_roms::Missing,
+    )>,
 ) -> Option<CoreGameMap> {
     let mut by_identity = BTreeMap::<String, Vec<PathBuf>>::new();
     let mut checked = 0;
@@ -790,9 +794,16 @@ fn build_core_game_map_observed(
         if checked % 32 == 0 {
             progress(checked);
         }
-        let Ok(descriptor) =
-            crate::favorites::descriptor_reference(path, "Arcade core artwork mapping")
-        else {
+        let what = "Arcade core artwork mapping";
+        let Ok(text) = crate::favorites::read_mgl_text(path, what) else {
+            continue;
+        };
+        if let Some((lookup, missing)) = &mut rom_check {
+            if lookup.missing(path, &text) {
+                missing.insert(path.clone());
+            }
+        }
+        let Ok(descriptor) = crate::favorites::descriptor_reference_text(path, what, &text) else {
             continue;
         };
         let Some(stem) = descriptor
@@ -1394,15 +1405,35 @@ fn stage_transactional_with_tag_observed(
             ));
         }
     }
+    let mut missing = crate::arcade_roms::Missing::new();
     let arcade_map = prepared
         .caches
         .iter()
         .find(|cache| cache.id.eq_ignore_ascii_case("Arcade"))
-        .and_then(|cache| build_core_game_map_observed(&cache.cache, cancelled, arcade_progress));
+        .and_then(|cache| {
+            build_core_game_map_observed(
+                &cache.cache,
+                cancelled,
+                arcade_progress,
+                Some((
+                    &mut crate::arcade_roms::Lookup::new(Path::new("/media/fat")),
+                    &mut missing,
+                )),
+            )
+        });
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
     if let Some(map) = arcade_map {
+        let rom_bytes = postcard::to_stdvec(&missing)
+            .map_err(|error| DegaussError::unsupported("Arcade ROM check", error.to_string()))?;
+        prepared.stage_extra_file(
+            dir.join(crate::arcade_roms::FILE),
+            &rom_bytes,
+            "arcade-roms",
+            true,
+            |written| postcard::from_bytes::<crate::arcade_roms::Missing>(written).is_ok(),
+        )?;
         let bytes = postcard::to_stdvec(&map).map_err(|error| {
             DegaussError::unsupported("core game map", format!("writing the map: {error}"))
         })?;
@@ -2023,6 +2054,55 @@ mod tests {
             below,
             details: Default::default(),
         }
+    }
+
+    #[test]
+    fn rebuilding_arcade_rechecks_archives_without_removing_indexed_games() {
+        let root = temp("arcade-zip-rebuild");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(arcade.join("mame")).unwrap();
+        let game = arcade.join("A game.mra");
+        let zip = arcade.join("mame/degauss-cache-rebuild-fixture.zip");
+        std::fs::write(&game, r#"<misterromdescription><rom zip="degauss-cache-rebuild-fixture.zip"><part name="rom.bin"/></rom></misterromdescription>"#).unwrap();
+        let mut config = system(&arcade);
+        config.extensions = vec!["mra".into()];
+        let cache = build_system(&Library::open(&config).unwrap());
+        for kind in [CacheKind::Gamelist, CacheKind::ArtworkPack] {
+            let store = root.join(format!("index-{kind:?}"));
+            let rebuild =
+                || save_system_with_index(&store, kind, "Arcade", &cache, &Index::new()).unwrap();
+            rebuild();
+            assert_eq!(
+                crate::arcade_roms::read(&store).unwrap().unwrap(),
+                [game.clone()].into()
+            );
+            std::fs::write(&zip, b"").unwrap();
+            let cancelled = AtomicBool::new(true);
+            let staged = StagedSystemCache {
+                id: "Arcade".into(),
+                cache: cache.clone(),
+                fingerprints: Default::default(),
+                fingerprints_complete: false,
+            };
+            assert!(stage_transactional(&store, kind, vec![staged], &cancelled)
+                .unwrap()
+                .is_none());
+            assert!(crate::arcade_roms::read(&store)
+                .unwrap()
+                .unwrap()
+                .contains(&game));
+            rebuild();
+            assert!(crate::arcade_roms::read(&store)
+                .unwrap()
+                .unwrap()
+                .is_empty());
+            assert_eq!(cache.get(&Place::Dir(arcade.clone())).unwrap().games, 1);
+            assert!(path_for_kind(&store, kind, "Arcade").is_file());
+            std::fs::remove_file(&zip).unwrap();
+            std::fs::write(store.join(crate::arcade_roms::FILE), [0xff]).unwrap();
+            assert!(crate::arcade_roms::read(&store).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn roots_cache(rows: Vec<Row>) -> SystemCache {

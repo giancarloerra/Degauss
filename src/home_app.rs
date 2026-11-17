@@ -763,11 +763,7 @@ impl App {
         }
         if let Some(target) = self.selected_image_target() {
             rows.push(CHANGE_CATEGORY_IMAGE.into());
-            if self
-                .logo_dir
-                .as_deref()
-                .is_some_and(|dir| target.has_override(dir))
-            {
+            if target.has_override(self.logo_dir.as_deref(), &self.settings) {
                 rows.push(CLEAR_CATEGORY_IMAGE.into());
             }
         }

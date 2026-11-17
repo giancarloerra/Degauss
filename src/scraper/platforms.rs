@@ -80,7 +80,7 @@ fn built_in(system: &str) -> Option<u32> {
         "MyVision" => 305,
         // These indexed libraries have no reviewed ScreenScraper platform.
         // An explicit user override still takes priority.
-        "MTX512" | "PC6001" => return None,
+        "MTX512" | "PC6001" | "PC8001" => return None,
         "Odyssey2" => 104,
         "MasterSystem" => 2,
         "MegaDuck" => 90,
@@ -256,6 +256,7 @@ mod tests {
             "Orao",
             "OtherCores",
             "PC6001",
+            "PC8001",
             "PCXT",
             "PCjr",
             "PDP1",

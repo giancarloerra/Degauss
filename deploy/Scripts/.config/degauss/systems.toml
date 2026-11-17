@@ -653,7 +653,7 @@ name = "Electron"
 id = "AcornElectron"
 folders = ["AcornElectron"]
 rbf = "_Computer/AcornElectron"
-extensions = ["vhd", "uef", "cas", "rom", "adf", "adl", "mgl"]
+extensions = ["vhd", "uef", "cas", "rom", "adf", "adl", "adm", "ssd", "dsd", "mgl"]
 
 [[systems.launch]]
 extensions = ["vhd"]
@@ -674,7 +674,7 @@ index = 3
 delay = 1
 
 [[systems.launch]]
-extensions = ["adf", "adl"]
+extensions = ["adf", "adl", "adm", "ssd", "dsd"]
 type = "s"
 index = 1
 delay = 1
@@ -2413,6 +2413,33 @@ index = 0
 delay = 1
 
 [[systems]]
+name = "NEC PC-8001"
+id = "PC8001"
+folders = ["PC8001"]
+rbf = "_Computer/PC8001"
+extensions = ["d88", "cmt", "t88", "n80", "rom", "bin", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["cmt", "t88"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["n80"]
+type = "f"
+index = 3
+delay = 1
+[[systems.launch]]
+extensions = ["rom", "bin"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
 name = "NEC PC-8801"
 id = "PC88"
 folders = ["PC8801", "PC88"]
@@ -2817,9 +2844,9 @@ name = "VideoBrain"
 id = "VideoBrain"
 folders = ["VideoBrain"]
 rbf = "_Computer/VideoBrain"
-extensions = ["bin", "mgl"]
+extensions = ["bin", "vbc", "mgl"]
 [[systems.launch]]
-extensions = ["bin"]
+extensions = ["bin", "vbc"]
 type = "f"
 index = 1
 delay = 1
@@ -2984,9 +3011,9 @@ name = "Sharp MZ-2500 / MZ-2520"
 id = "SharpMZ2500"
 folders = ["SharpMZ2500"]
 rbf = "_Computer/SharpMZ2500"
-extensions = ["d88", "mzt", "bin", "dat", "mgl"]
+extensions = ["d88", "hdm", "mzt", "bin", "dat", "mgl"]
 [[systems.launch]]
-extensions = ["d88"]
+extensions = ["d88", "hdm"]
 type = "s"
 index = 0
 delay = 2

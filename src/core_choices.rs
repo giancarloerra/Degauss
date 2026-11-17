@@ -193,7 +193,7 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Can a saved MGL keep the undated Acorn reference without selecting a
+/// Can a saved MGL keep an undated reference without selecting a
 /// different build from the one used for media validation?
 pub(crate) fn native_reference_selects(
     root: &Path,
@@ -242,7 +242,7 @@ fn native_rbf_winner(directory: &Path, prefix: &[u8]) -> Result<Option<Vec<u8>>>
 }
 
 /// N64 and Neo Geo Turbo can share their regular core's loose Main prefix.
-/// Sharp MZ and TK2000 also need the installed build date for media support.
+/// Sharp MZ, TK2000 and VideoBrain also need the installed build date for media support.
 /// Resolve these references without changing other families or pinned filenames.
 fn standard_reference(reference: &str, root: &Path) -> Result<String> {
     standard_reference_after(reference, root, None)?.ok_or_else(|| {
@@ -273,7 +273,7 @@ pub(crate) fn standard_reference_after(
                 || ["N64", "NeoGeo", "SharpMZ", "TK2000"]
                     .iter()
                     .any(|core| name.eq_ignore_ascii_case(core))
-                || core_variants::undated_acorn_media_core(name)
+                || core_variants::undated_media_core(name)
         })
     else {
         return Ok(Some(reference.to_string()));

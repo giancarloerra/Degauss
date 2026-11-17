@@ -472,6 +472,15 @@ impl LibraryState {
                 } else {
                     return Err(error("The selected Artwork Pack folder has not been prepared. Rebuild this system list."));
                 };
+                if system == "Arcade" && snapshot.settings.hide_missing_arcade_roms == Some(true) {
+                    crate::arcade_roms::filter(
+                        &snapshot.library.cache_dir,
+                        place,
+                        &source.config,
+                        &mut rows,
+                    )
+                    .map_err(error)?;
+                }
                 if let Some(provider) = &cache.provider {
                     provider.apply_prepared(&mut rows);
                 }

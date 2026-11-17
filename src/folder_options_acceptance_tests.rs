@@ -11,7 +11,11 @@ fn choose(app: &mut App, action: &str, delta: isize) {
     app.menu_list.select(group);
     app.handle(Action::Accept);
     assert_eq!(app.context_page, Some(ContextPage::Appearance));
-    let mut expected = vec![CHANGE_VIEW];
+    let mut expected = Vec::new();
+    if app.selected_image_target().is_some() {
+        expected.push(CHANGE_CATEGORY_IMAGE);
+    }
+    expected.push(CHANGE_VIEW);
     if app.has_custom_view() {
         expected.push(USE_GLOBAL_VIEW);
     }
@@ -391,6 +395,64 @@ fn run_favourites(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_system_by_index(0);
     app.leave_splash();
     assert!(app.in_favorites());
+    let logos = root.join("logos");
+    std::fs::create_dir_all(&logos).unwrap();
+    let cover = logos.join("chosen.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &cover,
+    )
+    .unwrap();
+    app.logo_dir = Some(logos);
+    let original = Place::Dir(favorites.join("Original")).key();
+    app.set_folder_image("Favorites", &original, Some(&cover))
+        .unwrap();
+    for (layout, has_cover, heart) in [
+        (Layout::MultiList, false, true),
+        (Layout::Gallery, true, false),
+    ] {
+        app.set_layout(layout);
+        select_row_named(&mut app, "Original");
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.game_list.window();
+        let row = app
+            .rows
+            .row_data(app.game_list.selected() - range.start)
+            .unwrap();
+        assert_eq!(
+            (row.has_cover, row.favorite),
+            (has_cover, heart),
+            "{}",
+            layout.label()
+        );
+    }
+    // Clearing the saved folder preference must not require the logo source.
+    let logos = app.logo_dir.take();
+    select_row_named(&mut app, "Original");
+    app.open_context();
+    let options = app
+        .menu
+        .iter()
+        .position(|entry| entry == "Folder Options")
+        .unwrap();
+    app.menu_list.select(options);
+    app.handle(Action::Accept);
+    let clear = app
+        .menu
+        .iter()
+        .position(|entry| entry == CLEAR_CATEGORY_IMAGE)
+        .expect("a saved folder image can be cleared without a logos directory");
+    app.menu_list.select(clear);
+    app.handle(Action::Accept);
+    assert!(matches!(app.pending, Some(Pending::ClearCategoryImage(_))));
+    app.handle(Action::Accept);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    let preferences = &saved.folder_preferences["Favorites"][&original];
+    assert_eq!(preferences.image, None);
+    assert_eq!(preferences.folders_last, Some(true));
+    app.logo_dir = logos;
+    app.set_layout(Layout::Details);
     enter(&mut app, "Original");
     assert!(app.folders_last);
     choose(&mut app, FOLDER_NAMES, 1);
