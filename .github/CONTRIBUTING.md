@@ -24,6 +24,11 @@ Anything that changes what is drawn should be looked at on a CRT at 352x240,
 which is what Degauss is built for. `--render` writes a frame to an image
 without taking the screen, so this does not need a machine in front of you.
 
+To rebuild an existing tag after a packaging fix, run the **release** workflow
+from `main` and enter the tag (for example `v1.2.2`) in **rebuild_tag**. This
+builds the tagged source and uploads the release files to the workflow run;
+it does not move the tag or publish a release.
+
 ## Tests
 
 A test should say why the behaviour matters, not only what it does. A test
