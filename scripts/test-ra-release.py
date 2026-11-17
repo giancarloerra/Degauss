@@ -5,10 +5,12 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -18,6 +20,29 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_hosted_ra_build_uses_the_runner_that_passes_its_sanitized_tests(self):
+        def runner(workflow, job):
+            source = (ROOT / '.github/workflows' / workflow).read_text()
+            match = re.search(rf'^  {job}:\n(?:    [^\n]*\n)*?    runs-on: (\S+)$', source, re.M)
+            self.assertIsNotNone(match, f'Missing runner for {job}')
+            return match[1]
+
+        checked = runner('check.yml', 'ra-controller-integration')
+        self.assertNotEqual(checked, 'ubuntu-latest')
+        self.assertEqual(runner('release.yml', 'ra-main'), checked)
+
+    def test_tag_rebuild_uses_requested_version_not_the_workflow_branch(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        step = workflow.split('      - name: Check the tag and the crate say the same version\n', 1)[1]
+        guard = textwrap.dedent(step.split('        run: |\n', 1)[1].split('\n      - ', 1)[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / 'Cargo.toml').write_text('version = "1.2.3"\n')
+            for tag, expected in [('v1.2.3', 0), ('v1.2.4', 1), ('1.2.3', 1)]:
+                with self.subTest(tag=tag):
+                    result = subprocess.run(['bash', '-ec', guard], cwd=tmp, capture_output=True,
+                                            env={**os.environ, 'GITHUB_REF_NAME': 'main', 'RELEASE_NAME': tag})
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
     def test_controller_controls_ship_with_the_ra_frontend_integration(self):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()

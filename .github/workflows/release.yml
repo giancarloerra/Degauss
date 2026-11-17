@@ -8,9 +8,18 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      rebuild_tag:
+        description: 'Rebuild an existing release tag as downloadable artifacts only'
+        type: string
+        required: false
 
 permissions:
   contents: write
+
+env:
+  RELEASE_SOURCE: ${{ inputs.rebuild_tag && format('refs/tags/{0}', inputs.rebuild_tag) || github.sha }}
+  RELEASE_NAME: ${{ inputs.rebuild_tag || github.ref_name }}
 
 jobs:
   # A maintained Bookworm host with Bullseye's GCC 10 / glibc 2.31 ARM
@@ -30,6 +39,7 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RELEASE_SOURCE }}
           persist-credentials: false
       - name: Read the tested Standard Main revision
         id: main-pin
@@ -95,9 +105,12 @@ jobs:
             standard-main/MiSTer_Degauss.sha
 
   ra-main:
-    runs-on: ubuntu-latest
+    # Match the hosted RA integration job that exercises these sanitizer tests.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
       - name: Build and test pinned RA Main
         run: ./scripts/build-ra-main.sh ra-build
       - name: Check the RA binary
@@ -117,8 +130,20 @@ jobs:
   mister:
     runs-on: ubuntu-latest
     needs: [main-fork, ra-main]
+    env:
+      RELEASE_FILES: |
+        dist/*.zip
+        dist/*.sha256
+        dist/degauss
+        dist/MiSTer_Degauss
+        dist/MiSTer_RA_Degauss
+        dist/MiSTer_RA_Degauss.cacert.pem
+        dist/MiSTer_RA_Degauss.SOURCE.txt
+        dist/*.tar.gz
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
 
       - name: Check out the Menu core source
         uses: actions/checkout@v5
@@ -132,12 +157,11 @@ jobs:
       # ties the two together, so a tag that does not match the crate ships
       # a binary that misreports which release it is.
       - name: Check the tag and the crate say the same version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.rebuild_tag != ''
         run: |
           CRATE=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          TAG="${GITHUB_REF_NAME#v}"
-          echo "Cargo.toml says ${CRATE}, the tag says ${TAG}"
-          test "${CRATE}" = "${TAG}"
+          echo "Cargo.toml says ${CRATE}, the release tag is ${RELEASE_NAME}"
+          test "v${CRATE}" = "${RELEASE_NAME}"
 
       - name: Install the ARM target
         run: rustup target add armv7-unknown-linux-musleabihf
@@ -173,7 +197,7 @@ jobs:
         id: package
         run: |
           (cd support/menu-core && sha256sum -c menu.rbf.sha256)
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_NAME#v}"
           NAME="degauss-${VERSION}-mister"
           mkdir -p "dist/${NAME}/degauss"
           cp -R deploy/Scripts "dist/${NAME}/Scripts"
@@ -246,7 +270,7 @@ jobs:
           cp deploy/Scripts/.config/degauss/degauss dist/degauss
           cp fork/MiSTer_Degauss dist/MiSTer_Degauss
           cp ra/MiSTer_RA_Degauss ra/MiSTer_RA_Degauss.cacert.pem ra/MiSTer_RA_Degauss.SOURCE.txt dist/
-          python3 scripts/make-db.py "${GITHUB_REF_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json --ra-dir ra
+          python3 scripts/make-db.py "${RELEASE_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json --ra-dir ra
           (cd dist && zip -q degauss.json.zip degauss.json && rm degauss.json)
 
       - name: Check the database is well formed
@@ -274,18 +298,10 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.name }}
-          path: dist/*.zip
+          path: ${{ inputs.rebuild_tag && env.RELEASE_FILES || 'dist/*.zip' }}
 
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && inputs.rebuild_tag == ''
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            dist/*.zip
-            dist/*.sha256
-            dist/degauss
-            dist/MiSTer_Degauss
-            dist/MiSTer_RA_Degauss
-            dist/MiSTer_RA_Degauss.cacert.pem
-            dist/MiSTer_RA_Degauss.SOURCE.txt
-            dist/*.tar.gz
+          files: ${{ env.RELEASE_FILES }}
