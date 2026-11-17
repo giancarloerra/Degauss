@@ -14193,6 +14193,7 @@ impl App {
                 self.apply_geometry();
             }
             OptionId::HideMissingArcadeRoms => {
+                self.dirty = true;
                 if self.settings.hide_missing_arcade_roms == Some(true) {
                     self.settings.hide_missing_arcade_roms = Some(false);
                 } else {

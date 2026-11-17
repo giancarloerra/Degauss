@@ -87,6 +87,26 @@ pub(super) fn arcade_rom_visibility(parent: &Path, window: Rc<MinimalSoftwareWin
     }
     let toggle = OptionId::HideMissingArcadeRoms;
     app.screen = Screen::Options;
+    // A settled Options screen must show a failed enable without a second input.
+    let systems = std::mem::take(&mut app.all_systems);
+    app.dirty = false;
+    app.adjust_option_value(toggle, 1);
+    assert_eq!(
+        app.message.take().as_deref(),
+        Some("No Arcade library is available to check.")
+    );
+    assert!(app.dirty, "the missing-library error must request a redraw");
+    app.all_systems = systems;
+    std::fs::write(&sidecar, b"not an index").unwrap();
+    let read_error = crate::arcade_roms::read(&app.cache_dir)
+        .unwrap_err()
+        .to_string();
+    app.dirty = false;
+    app.adjust_option_value(toggle, 1);
+    assert_eq!(app.message.take().as_deref(), Some(read_error.as_str()));
+    assert!(app.dirty, "the index read error must request a redraw");
+    assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
+    std::fs::remove_file(&sidecar).unwrap();
     app.adjust_option_value(toggle, 1);
     assert!(app.enabling_arcade_rom_filter && app.build.is_some());
     app.cancel_index();
