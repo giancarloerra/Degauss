@@ -86,13 +86,30 @@ pub(super) fn arcade_rom_visibility(parent: &Path, window: Rc<MinimalSoftwareWin
         std::fs::remove_file(&sidecar).unwrap();
     }
     let toggle = OptionId::HideMissingArcadeRoms;
+    app.screen = Screen::Options;
     app.adjust_option_value(toggle, 1);
     assert!(app.enabling_arcade_rom_filter && app.build.is_some());
     app.cancel_index();
     app.finish_background_work_for_headless();
     assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
-    app.index_terminal = None;
-    app.message = None;
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Options);
+    // A failed cache write must not look like a successful web option change.
+    let failed = edit(
+        &mut app,
+        json!({"action":"option-adjust","option":"HideMissingArcadeRoms","delta":1}),
+    );
+    let saved = root.join("saved-index");
+    std::fs::rename(&app.cache_dir, &saved).unwrap();
+    std::fs::write(&app.cache_dir, b"not a directory").unwrap();
+    app.finish_background_work_for_headless();
+    let job = command(&mut app, json!({"action":"job","id":failed["job"]}));
+    assert_eq!(job["state"], "failed");
+    assert_eq!(job["error"]["code"], "index");
+    assert!(!app.settings.hide_missing_arcade_roms.unwrap_or(false));
+    std::fs::remove_file(&app.cache_dir).unwrap();
+    std::fs::rename(saved, &app.cache_dir).unwrap();
+    app.handle(Action::Quit);
     let started = edit(
         &mut app,
         json!({"action":"option-adjust","option":"HideMissingArcadeRoms","delta":1}),

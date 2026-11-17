@@ -11717,21 +11717,24 @@ impl App {
             .is_some_and(|storage| storage.rebuilding.is_some());
         let finished = self.build.take().expect("active build");
         if std::mem::take(&mut self.enabling_arcade_rom_filter) && !finished.cancelling {
-            match crate::arcade_roms::read(&self.cache_dir) {
+            let problem = match crate::arcade_roms::read(&self.cache_dir) {
                 Ok(Some(_)) => {
                     self.settings.hide_missing_arcade_roms = Some(true);
-                    if !self.save_settings() {
-                        let problem = self
-                            .message
+                    (!self.save_settings()).then(|| {
+                        self.message
                             .take()
-                            .unwrap_or_else(|| "Could not save Arcade ROM filter".into());
-                        self.build_warning(problem);
-                    }
+                            .unwrap_or_else(|| "Could not save Arcade ROM filter".into())
+                    })
                 }
-                Ok(None) => self.build_warning(
-                    "Arcade ROM check was not created; the filter remains Off".into(),
-                ),
-                Err(error) => self.build_warning(error.to_string()),
+                Ok(None) => Some("Arcade ROM check was not created; the filter remains Off".into()),
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(problem) = problem {
+                self.build_warning(problem.clone());
+                if let Some(id) = self.web.rebuild_job.take() {
+                    let details = self.message_after_build.as_deref().unwrap_or(&problem);
+                    self.web_finish_job(id, Err(WebError::new("index", details)));
+                }
             }
         }
         self.restore_unfinished_storage();
@@ -14196,6 +14199,9 @@ impl App {
                     match crate::arcade_roms::read(&self.cache_dir) {
                         Ok(Some(_)) => self.settings.hide_missing_arcade_roms = Some(true),
                         Ok(None) if self.all_systems.iter().any(|s| s.def.id == "Arcade") => {
+                            self.index_return_screen = self.screen;
+                            self.index_terminal = None;
+                            self.index_details = false;
                             self.rebuild_ordinary_system("Arcade");
                             self.enabling_arcade_rom_filter = self.build.is_some();
                             return;
