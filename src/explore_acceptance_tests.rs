@@ -207,11 +207,29 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.explore_menu_heading(), "Explore / System");
     app.explore_actions();
     assert!(app.menu.iter().any(|entry| entry == CLEAR_SEARCH));
+    let version = app
+        .menu
+        .iter()
+        .position(|entry| entry == GAME_CORE_VERSION)
+        .expect("an eligible Explore result offers its own Core Version");
+    app.menu_list.select(version);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::LaunchCore);
+    assert!(matches!(
+        app.launch_core_target.as_ref(),
+        Some(LaunchCoreTarget::GameVersion(_))
+    ));
+    assert_eq!(
+        app.menu.first().map(String::as_str),
+        Some("Use System Setting")
+    );
+    app.handle(Action::Quit);
     app.filter = "no such title".into();
     app.apply_filter();
     app.explore_actions();
     assert!(!app.menu.iter().any(|entry| entry == GAME_INFORMATION));
     assert!(!app.menu.iter().any(|entry| entry == GAME_LAUNCH_CORE));
+    assert!(!app.menu.iter().any(|entry| entry == GAME_CORE_VERSION));
     app.filter = "beta".into();
     app.apply_filter();
     app.game_list.select(1);

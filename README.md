@@ -1322,8 +1322,8 @@ To make an exception for one game, highlight it and open **X Actions → Game �
 Core Version**. For example, leave NES on **Standard** and select
 **RetroAchievements** for just one title. The chooser lists the installed
 versions for that game's compatible core. **Use System Setting** removes only
-the game's version override. The choice follows the game through its library,
-recognised Degauss Favourites and Last Played, including after restart.
+the game's version override. The same choice follows the game through its library,
+Explore Games, recognised Degauss Favourites and Last Played, including after restart.
 In **Web Access → game Actions**, **Core Version** changes the same setting;
 **Compatible core** appears only if there is another usable family or a saved
 family choice to clear. A game's family and version can be changed independently.

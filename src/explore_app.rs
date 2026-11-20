@@ -510,8 +510,11 @@ impl App {
         }
         actions.push(CHANGE_VIEW.into());
         actions.extend(self.custom_view_actions());
-        if self.selected_game_launch_core_target().is_some() {
-            actions.push(GAME_LAUNCH_CORE.into());
+        if let Some(game) = self.selected_core_game() {
+            if self.game_family_action(&game) {
+                actions.push(GAME_LAUNCH_CORE.into());
+            }
+            actions.push(GAME_CORE_VERSION.into());
         }
         if self.selected_pack_match_target().is_some() {
             actions.push(ARTWORK_PACK_MATCH.into());
