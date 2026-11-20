@@ -1324,6 +1324,7 @@ Core Version**. For example, leave NES on **Standard** and select
 versions for that game's compatible core. **Use System Setting** removes only
 the game's version override. The same choice follows the game through its library,
 Explore Games, recognised Degauss Favourites and Last Played, including after restart.
+In Explore Games, select a result and open **X Actions → Core Version**.
 In **Web Access → game Actions**, **Core Version** changes the same setting;
 **Compatible core** appears only if there is another usable family or a saved
 family choice to clear. A game's family and version can be changed independently.
