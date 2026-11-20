@@ -43,6 +43,13 @@ impl App {
         &self,
         id: &str,
     ) -> std::result::Result<(String, browse::Launch, String), WebError> {
+        let (owner, launch, name) = self.web_game_identity(id)?;
+        Ok((owner.ok_or_else(|| web_error("This favourite has no identifiable owning system."))?, launch, name))
+    }
+
+    fn web_game_identity(
+        &self, id: &str,
+    ) -> std::result::Result<(Option<String>, browse::Launch, String), WebError> {
         let target = self
             .web
             .targets
@@ -71,15 +78,9 @@ impl App {
             let (_, system, _, launch) = self
                 .favorite_launch_context(launch, found.to_config())
                 .map_err(web_error)?;
-            Ok((
-                system.ok_or_else(|| {
-                    web_error("This favourite has no identifiable owning system.")
-                })?,
-                launch,
-                name,
-            ))
+            Ok((system, launch, name))
         } else {
-            Ok((system.clone(), launch.clone(), name))
+            Ok((Some(system.clone()), launch.clone(), name))
         }
     }
 

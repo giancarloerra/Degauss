@@ -536,6 +536,9 @@ fn check_descriptor_core(launcher: &Path, menu_root: &Path) -> Result<()> {
                 ),
             ));
         }
+        if extension.eq_ignore_ascii_case("mgl") {
+            crate::core_variants::check_computer_media_launcher(launcher, &rbf, menu_root)?;
+        }
     }
     Ok(())
 }
@@ -695,6 +698,7 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
             return Ok(None);
         }
     }
+    validate_svi_disk(system, game)?;
     let rule = rule_for(system, game)?;
     let absolute = game.to_str().ok_or_else(|| {
         DegaussError::unsupported(
@@ -740,6 +744,30 @@ fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule>
                 ),
             )
         })
+}
+
+/// Re-check stale game references at launch; ordinary media require no extra I/O.
+fn validate_svi_disk(system: &SystemConfig, game: &Path) -> Result<()> {
+    if !system.is_svi_disk(game) {
+        return Ok(());
+    }
+    let size = if crate::zip::split_member_path(game).is_some() {
+        crate::zip::validate_member_for_launch(game)?.size
+    } else {
+        std::fs::metadata(game)
+            .map_err(|e| DegaussError::io("SV-328 disk size", game, e))?
+            .len()
+    };
+    if !SystemConfig::svi_disk_size(size) {
+        return Err(DegaussError::unsupported(
+            "SV-328 disk",
+            format!(
+                "{} has {size} bytes; expected a raw 172032 or 346112 byte disk.",
+                game.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The format rule represented by an existing Degauss-compatible favourite.
@@ -1208,6 +1236,7 @@ pub fn favorite_mgl_with_selections(
 /// core and its ROM set, and MiSTer loads one directly. The same is true of
 /// an `.mgl` someone has already written and of a bare `.rbf`.
 pub fn plan(system: &SystemConfig, game: &Path, mgl_path: &Path) -> Result<LaunchPlan> {
+    validate_svi_disk(system, game)?;
     if let Some(extension) = game.extension().and_then(|e| e.to_str()) {
         // A favourite that carries a title rather than a path: start
         // AmigaVision the way choosing the title in its own folder would,
@@ -1803,6 +1832,152 @@ mod tests {
             assert!(plan.mgl.is_empty() && plan.command.contains(legacy.to_str().unwrap()));
             assert_eq!(std::fs::read_to_string(&legacy).unwrap(), setup);
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn november_computer_media_use_the_shipped_slots_and_keep_legacy_routes() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-media-20261118-{}", std::process::id()));
+        let cores = root.join("_Computer");
+        std::fs::create_dir_all(&cores).unwrap();
+        let output = root.join("generated.mgl");
+        type Route<'a> = (&'a str, &'a str, u8, Option<&'a str>);
+        for (id, basename, routes) in [
+            (
+                "SVI328",
+                "Svi328",
+                &[
+                    ("dsk", "s", 0, Some("20261117")),
+                    ("cas", "f", 2, None),
+                    ("rom", "f", 1, None),
+                    ("bin", "f", 1, None),
+                ][..],
+            ),
+            (
+                "Laser",
+                "Laser310",
+                &[
+                    ("dsk", "s", 1, Some("20261118")),
+                    ("cas", "s", 0, Some("20261118")),
+                    ("wav", "s", 0, Some("20261118")),
+                    ("vz", "f", 1, None),
+                ],
+            ),
+            (
+                "Lynx48",
+                "Lynx48",
+                &[
+                    ("ldf", "s", 0, Some("20261118")),
+                    ("tzx", "f", 1, Some("20261118")),
+                    ("wav", "f", 1, Some("20261118")),
+                    ("tap", "f", 1, None),
+                ],
+            ),
+        ] as [(&str, &str, &[Route<'_>]); 3]
+        {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            for date in ["20250907", "20261117", "20261118"] {
+                let core = cores.join(format!("{basename}_{date}.rbf"));
+                std::fs::write(&core, b"core").unwrap();
+                for &(ext, kind, index, minimum) in routes {
+                    let game = games.join(format!("Game.{ext}"));
+                    std::fs::File::create(&game)
+                        .unwrap()
+                        .set_len(if id == "SVI328" && ext == "dsk" {
+                            172_032
+                        } else {
+                            128
+                        })
+                        .unwrap();
+                    let plan =
+                        plan_with_selections(&system, &game, &output, &root, false, None, None);
+                    let favorite =
+                        favorite_mgl_with_selections(&system, &game, &root, false, None, None);
+                    if let Some(minimum) = minimum.filter(|min| date < *min) {
+                        assert!(
+                            plan.unwrap_err().to_string().contains(minimum),
+                            "{id} {ext}"
+                        );
+                        assert!(favorite.unwrap_err().to_string().contains(minimum));
+                        continue;
+                    }
+                    let text = plan.unwrap().mgl;
+                    let slot = format!("type=\"{kind}\" index=\"{index}\"");
+                    assert!(text.contains(&slot), "{text}");
+                    assert!(favorite.unwrap().unwrap().contains(&slot));
+                    if id == "SVI328" && ext == "dsk" {
+                        assert!(text.find("<file").unwrap() < text.find("<reset").unwrap());
+                    }
+                }
+                if id == "SVI328" || id == "Laser" {
+                    let second = if id == "SVI328" { 1 } else { 2 };
+                    let explicit = games.join("Two drives.mgl");
+                    let text = format!(
+                        r#"<mistergamedescription><rbf>_Computer/{basename}_{date}</rbf><file type="s" index="{second}" path="Game.dsk"/></mistergamedescription>"#
+                    );
+                    std::fs::write(&explicit, &text).unwrap();
+                    let plan = plan_with_selections(
+                        &system,
+                        &explicit,
+                        &output,
+                        &root,
+                        false,
+                        Some("ra"),
+                        None,
+                    );
+                    if date < "20261118" {
+                        assert!(plan.unwrap_err().to_string().contains("20261118"));
+                    } else {
+                        assert!(plan.unwrap().mgl.is_empty());
+                    }
+                    assert_eq!(std::fs::read_to_string(&explicit).unwrap(), text);
+                }
+                std::fs::remove_file(core).unwrap();
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn svi_floppy_geometry_and_blank_recording_template_only_filter_that_library() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-svi-geometry-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let svi = shipped_system("SVI328", vec![root.clone()]);
+        let laser = shipped_system("Laser", vec![root.clone()]);
+        for (name, size) in [
+            ("Single.dsk", 172_032),
+            ("Double.DSK", 346_112),
+            ("Other.dsk", 100),
+            ("blank_tape_64k.CAS", 65536),
+            ("Recorded.cas", 65536),
+        ] {
+            std::fs::File::create(root.join(name))
+                .unwrap()
+                .set_len(size)
+                .unwrap();
+        }
+        let archive = root.join("Inside.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["Wrong.dsk", "blank_tape_64k.cas", "Only.cas"], false),
+        )
+        .unwrap();
+        let lib = crate::browse::Library::open(&svi).unwrap();
+        let (rows, stats) = lib.list(&lib.start(), false).unwrap();
+        assert_eq!(stats.games, 4);
+        assert!(rows.iter().any(|r|matches!(&r.kind,crate::browse::Kind::Play(crate::browse::Launch::File(p)) if p==&archive.join("Only.cas"))));
+        assert!(
+            plan(&svi, &root.join("Other.dsk"), &root.join("launch.mgl"))
+                .unwrap_err()
+                .to_string()
+                .contains("172032")
+        );
+        assert!(laser.accepts_fs_file(&root.join("Other.dsk")).unwrap());
+        assert!(laser.accepts(&root.join("blank_tape_64k.cas")));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -3511,6 +3686,25 @@ mod tests {
             &fixed,
             &crate::browse::Launch::File(PathBuf::from("/games/C64/Game.prg"))
         ));
+        let mut settings = crate::settings::Settings::default();
+        settings
+            .core_choices
+            .insert("C64".into(), "standard".into());
+        for (cfg, path) in [
+            (&fixed, "/games/C64/Game.prg"),
+            (&system, "/fav/Game.mgl"),
+            (&system, "/fav/Game.mra"),
+            (&system, "/fav/Core.rbf"),
+        ] {
+            let game = crate::browse::Launch::File(path.into());
+            let key = crate::game_launch_cores::key(&game);
+            crate::game_launch_cores::set_version(&mut settings, "C64", &key, Some("ra"));
+            assert_eq!(
+                crate::game_launch_cores::effective_version(&settings, "C64", &game, cfg),
+                Some("standard"),
+                "a stale override cannot redirect a fixed launch: {path}"
+            );
+        }
         assert!(game_core_selectable(
             &system,
             &crate::browse::Launch::AmigaVision {

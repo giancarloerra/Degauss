@@ -207,7 +207,11 @@ fn read_using(
             contents
                 .entries
                 .iter()
-                .filter(|entry| request.config.accepts(Path::new(&entry.name)))
+                .filter(|entry| {
+                    request
+                        .config
+                        .accepts_sized(Path::new(&entry.name), entry.size)
+                })
                 .count()
                 != 1
         }

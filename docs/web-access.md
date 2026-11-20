@@ -194,7 +194,7 @@ current revision from their editor's read response. Commands reject unknown fiel
 | Pack matching | `pack-matches` (`game`, `search?`); `pack-match-save` (`revision`, `game`, `choice?`) |
 | Favourites | `favorite-folders`; `favorite-add` (`game`, `folder?`, `name?`); `favorite-remove` (`game`); `favorite-folder-create` (`name`); `favorite-folder-rename` (`folder`, `name`); `favorite-folder-delete` (`folder`) |
 | Images | `images`; `image-choose` (`revision`, `target`, `image?`) |
-| Core choice | `cores` (`category?`); `core-choices` (`system`, `game?`); `core-select` (`revision`, `system`, `game?`, `family?`, `version?`) |
+| Core choice | `cores` (`category?`); `core-choices` (`system`, `game?`); `core-select` (`revision`, `system`, `game?`, `family?`, `version?`); `game-core-version` (`revision`, `system`, `game`, `version`) |
 | Core Updates | `core-updates` (`begin?`, `refresh?`); `core-update` (`key`); `core-updates-seen` (`snapshot`) |
 | Controllers | `controllers`; `controller-save` (`revision`, `id`, `profile`) |
 | Settings | `option-adjust` (`revision`, `option`, `delta`); `reset` (`revision`, `kind`); `ini-profiles`; `ini-switch` (`slot`) |
@@ -202,6 +202,15 @@ current revision from their editor's read response. Commands reject unknown fiel
 | Work | `rebuild` (`system?`); `job` (`id`); `cancel` (`id`) |
 
 ### Native data contracts
+
+- **Per-game core choices:** On opening a game's Actions, request
+  `core-choices` with its registered system and game IDs. Show the family
+  picker when `choose_family` is true and the version picker when `eligible`
+  is true. `family` and `game_version` are the saved game selections;
+  `version` is the system selection. Use the available rows from `families`
+  or `versions`, display any `version_notice`, and keep **Use System Setting**
+  available for a removed build. Send `game-core-version` with `null` to clear
+  the game version; `core-select` with a game changes its family only.
 
 - **Live presentation:** `state` returns `theme`, `font`, `text_size` and
   `crt_images`. The latter is the native CRT Image Effect preference for browser
@@ -251,8 +260,7 @@ current revision from their editor's read response. Commands reject unknown fiel
   Opening the browser alone does not mark an unseen change as seen.
 - **Options:** use IDs returned by `options`; adjustable options accept delta
   `-1` or `1`. Dedicated editors use their corresponding commands. Reset kind is
-  `view-selections` or `hidden`. Game core versions remain per-system; a game
-  override selects a compatible family.
+  `view-selections` or `hidden`.
 - **Upload:** `POST /api/v1/upload/{target}` with raw PNG/JPEG bytes, session,
   CSRF and `X-Degauss-Revision`. A game target writes its Gamelist image. A Home
   entry, category, system or library-folder target imports a logo and chooses

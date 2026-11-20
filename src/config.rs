@@ -307,6 +307,14 @@ impl SystemConfig {
             return false;
         };
         let ext = ext.to_ascii_lowercase();
+        if ext == "cas"
+            && self.rbf.eq_ignore_ascii_case("_Computer/Svi328")
+            && path
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("blank_tape_64k.cas"))
+        {
+            return false;
+        }
         if self.setname.as_deref() == Some("Atari2600") && ext == "bin" {
             let roots = std::iter::once(self.path.as_str())
                 .chain(self.extra_paths.iter().map(String::as_str))
@@ -328,6 +336,34 @@ impl SystemConfig {
             }
         }
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
+    }
+
+    pub fn is_svi_disk(&self, path: &Path) -> bool {
+        self.rbf.eq_ignore_ascii_case("_Computer/Svi328")
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("dsk"))
+    }
+
+    pub fn accepts_sized(&self, path: &Path, bytes: u64) -> bool {
+        self.accepts(path) && (!self.is_svi_disk(path) || Self::svi_disk_size(bytes))
+    }
+
+    pub fn svi_disk_size(bytes: u64) -> bool {
+        matches!(bytes, 172_032 | 346_112)
+    }
+
+    pub fn accepts_fs_file(&self, path: &Path) -> Result<bool> {
+        if !self.accepts(path) {
+            return Ok(false);
+        }
+        if self.is_svi_disk(path) {
+            let size = std::fs::metadata(path)
+                .map_err(|e| DegaussError::io("SV-328 disk size", path, e))?
+                .len();
+            return Ok(Self::svi_disk_size(size));
+        }
+        Ok(true)
     }
 
     /// The launch rule covering a file, if the config declares one.

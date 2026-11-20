@@ -187,12 +187,15 @@ const VIDEO_BRAIN: (&str, &str) = ("VideoBrain", "VideoBrain_DualSDRAM");
 /// Resolve these undated families before checking their media build dates.
 /// An explicitly dated reference stays fixed.
 pub(crate) fn undated_media_core(stem: &str) -> bool {
-    ACORN_MEDIA_CORES
-        .into_iter()
-        .chain([SHARP_MZ_2500, VIDEO_BRAIN])
-        .any(|(standard, dual)| {
-            stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
-        })
+    ["Svi328", "Laser310", "Lynx48"]
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
+        || ACORN_MEDIA_CORES
+            .into_iter()
+            .chain([SHARP_MZ_2500, VIDEO_BRAIN])
+            .any(|(standard, dual)| {
+                stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
+            })
 }
 
 fn acorn_media_family(stem: &str) -> Option<&'static str> {
@@ -664,6 +667,34 @@ pub fn needs_conversion(path: &Path, core: &EffectiveCore) -> Result<bool> {
 
 /// Check the selected build only for media added after a core's first release.
 /// The same check applies to direct launches and persistent favourites.
+pub(crate) fn check_computer_media_launcher(
+    path: &Path,
+    reference: &str,
+    root: &Path,
+) -> Result<()> {
+    let stem = Path::new(reference)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if !["Svi328", "Laser310", "Lynx48"].iter().any(|name| {
+        same_core_identity(stem, name) || crate::core_choices::nightly_matches(stem, name)
+    }) {
+        return Ok(());
+    }
+    let resolved = crate::core_choices::standard_reference_after(reference, root, None)?
+        .ok_or_else(|| {
+            DegaussError::unsupported("launcher core", format!("{reference} is not installed"))
+        })?;
+    check_media_build(
+        &read_launcher(path)?,
+        path,
+        &EffectiveCore {
+            rbf: resolved,
+            setname_xml: None,
+        },
+    )
+}
+
 fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()> {
     let stem = Path::new(&core.rbf)
         .file_name()
@@ -674,6 +705,12 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
     };
     let (name, requirements): (&str, &[(&str, &[&str])]) = if matches("TK2000") {
         ("TK2000", &[("20261107", &["ct2"])])
+    } else if matches("Svi328") {
+        ("SV-328", &[("20261117", &["dsk"])])
+    } else if matches("Laser310") {
+        ("Laser 310", &[("20261118", &["dsk", "cas", "wav"])])
+    } else if matches("Lynx48") {
+        ("Camputers Lynx", &[("20261118", &["ldf", "tzx", "wav"])])
     } else if matches(SHARP_MZ_2500.0) || matches(SHARP_MZ_2500.1) {
         ("Sharp MZ-2500 / MZ-2520", &[("20261113", &["hdm"])])
     } else if matches(VIDEO_BRAIN.0) || matches(VIDEO_BRAIN.1) {
@@ -693,7 +730,8 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
         }
     };
     let too_old = |minimum| !crate::core_choices::nightly_meets_minimum(stem, Some(minimum));
-    if !requirements.iter().any(|&(minimum, _)| too_old(minimum)) {
+    let before_second_svi_drive = name == "SV-328" && too_old("20261118");
+    if !before_second_svi_drive && !requirements.iter().any(|&(minimum, _)| too_old(minimum)) {
         return Ok(());
     }
     let mut reader = Reader::from_str(text);
@@ -707,7 +745,8 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
             {
                 let mut file = None;
                 let mut file_transfer = false;
-                let mut cartridge_slot = false;
+                let mut mount = false;
+                let mut slot = None;
                 for attr in tag.attributes() {
                     let attr = attr.map_err(|e| {
                         DegaussError::malformed("core launcher", path, e.to_string())
@@ -717,13 +756,9 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
                         file = Some(attr);
                     } else if key.eq_ignore_ascii_case("type") {
                         file_transfer = attr.value.eq_ignore_ascii_case("f");
+                        mount = attr.value.eq_ignore_ascii_case("s");
                     } else if key.eq_ignore_ascii_case("index") {
-                        cartridge_slot = attr
-                            .value
-                            .trim()
-                            .parse::<u8>()
-                            .ok()
-                            .is_some_and(|index| matches!(index, 3 | 4));
+                        slot = attr.value.trim().parse::<u8>().ok();
                     }
                 }
                 let Some(file) = file else { continue };
@@ -734,10 +769,17 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
                 };
                 // Electron's .rom rule is for Plus 1 cartridges, not F0
                 // firmware in an explicit launcher for an older build.
-                if extension.eq_ignore_ascii_case("rom") && !(file_transfer && cartridge_slot) {
+                if extension.eq_ignore_ascii_case("rom")
+                    && !(file_transfer && matches!(slot, Some(3 | 4)))
+                {
                     continue;
                 }
                 for &(minimum, extensions) in requirements {
+                    let minimum = if before_second_svi_drive && mount && slot == Some(1) {
+                        "20261118"
+                    } else {
+                        minimum
+                    };
                     if too_old(minimum)
                         && extensions
                             .iter()

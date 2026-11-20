@@ -1128,6 +1128,18 @@ is ready. D88 needs the disk unit ROM in `boot.rom`. See the
 [PC-8001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/d05d384f6829a3dde9d2dfd569e8ab64bcc72e72/docs/PC8001/README.md)
 for the firmware and model setup. This is separate from the PC-8801 library.
 
+**SV-328** (`games/SVI328`) accepts raw DSK disks of 172,032 or 346,112
+bytes. With **SV-801 disk** enabled, Degauss mounts Drive A and resets the
+machine (core build 20261117 or newer). An explicit MGL can mount Drive B in
+slot 1 from build 20261118. The supplied `blank_tape_64k.cas` is a recording
+template, not a game. Existing cassette and cartridge launches are unchanged.
+
+**Laser 310** (`games/Laser`) mounts DSK in Drive 1 (slot 1) and CAS/WAV
+tapes in slot 0; an explicit MGL can use Drive 2 (slot 2). **Camputers Lynx**
+(`games/Lynx48`) mounts LDF disks in slot 0 on the 96K/128K models and loads
+TZX/WAV tapes in file slot 1. These new media need builds dated 20261118 or
+newer; older builds keep their VZ and TAP support respectively.
+
 **Memotech MTX500/512** (`games/MTX512`) sends MTX/WAV tapes to **Insert Tape**
 (file slot 1) and mounts MFL/DSK images in SDX Disc A (image slot 1).
 Use an explicit MGL for Disc B (image slot 2). The writable **Save Tape**
@@ -1305,6 +1317,16 @@ saved for that system and applies to its games and recognized favourites.
 **Use Default Core Version** removes that override. Default follows **Options → Library → Core Preference**
 and never automatically chooses an Unstable build. A missing explicitly selected
 version produces an error; it does not launch another version.
+
+To make an exception for one game, highlight it and open **X Actions → Game →
+Core Version**. For example, leave NES on **Standard** and select
+**RetroAchievements** for just one title. The chooser lists the installed
+versions for that game's compatible core. **Use System Setting** removes only
+the game's version override. The choice follows the game through its library,
+recognised Degauss Favourites and Last Played, including after restart.
+In **Web Access → game Actions**, **Core Version** changes the same setting;
+**Compatible core** appears only if there is another usable family or a saved
+family choice to clear. A game's family and version can be changed independently.
 
 When a system declares more than one compatible core family,
 **X Actions → Library → System Launch Core** chooses the family for that system.

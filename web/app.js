@@ -498,7 +498,18 @@ async function gameDetails(item) {
   } finally { content.removeAttribute('aria-busy'); }
 }
 async function gameActions(item) {
-  modal(item.name, el('div', { class: 'actions' }, button('Launch', () => launch(item.id), true), button('Game information', () => gameDetails(item)), button('Add to Home', () => addHome(item)), button(item.favorite ? 'Remove favourite' : 'Add favourite', async () => { if (item.favorite) { await command('favorite-remove', { game: item.id }); closeModal(); await renderRoute(); } else await addFavorite(item); }), button('Core choice', () => coreChoices(item.system, item.id)), button('Artwork', () => artworkActions(item)), button('Hide game', async () => { await edit('hide', { target: item.id, hidden: true }); closeModal(); await renderRoute(); })));
+  const reading = el('span', { role: 'status' }, 'Reading core choices…');
+  modal(item.name, el('div', { class: 'actions' }, button('Launch', () => launch(item.id), true), button('Game information', () => gameDetails(item)), button('Add to Home', () => addHome(item)), button(item.favorite ? 'Remove favourite' : 'Add favourite', async () => { if (item.favorite) { await command('favorite-remove', { game: item.id }); closeModal(); await renderRoute(); } else await addFavorite(item); }), reading, button('Artwork', () => artworkActions(item)), button('Hide game', async () => { await edit('hide', { target: item.id, hidden: true }); closeModal(); await renderRoute(); })));
+  try {
+    const data = await command('core-choices', { system: item.system, game: item.id });
+    if (!$('editor').open || !$('editor-body').contains(reading)) return;
+    const buttons = [];
+    if (data.choose_family) buttons.push(button('Compatible core', () => gameCorePicker(item, data, false)));
+    if (data.eligible) buttons.push(button('Core Version', () => gameCorePicker(item, data, true)));
+    reading.replaceWith(...buttons);
+  } catch (error) {
+    if ($('editor').open && $('editor-body').contains(reading)) reading.replaceWith(notice(error.message));
+  }
 }
 async function systemActions(item) {
   modal(item.name, el('div', { class: 'actions' }, button('Open', () => { closeModal(); go('browse', { system: item.system }); }), button('Add to Home', () => addHome(item)), button('Game data source', () => gameData(item.system)), button('Core choice', () => coreChoices(item.system)), button('Choose image', () => chooseImage(item.id)), button('Change MiSTer layout', () => chooseView(item.id)), button('Folder options', () => folderOptions(item.id)), button('Rebuild system', async () => { closeModal(); await operation('rebuild', { system: item.system }); await renderRoute(); }), button('Scrape system', () => scrapeConfirm(item.id, item.name)), button('Hide system', async () => { await edit('hide', { target: item.id, hidden: true }); closeModal(); await renderRoute(); })));
@@ -597,12 +608,26 @@ function randomMenu(scope) {
     modal('Random', button('Random Game', () => pick(false)), button('Random Favourite', () => pick(true)));
   });
 }
-async function coreChoices(system, game = null) {
-  const data = await command('core-choices', { system, game }); state.revision = data.revision;
-  const family = select([['', game ? 'Follow system' : 'Automatic'], ...data.families.filter(x => x.available).map(x => [x.id, x.label])], data.family || '');
+async function coreChoices(system) {
+  const data = await command('core-choices', { system }); state.revision = data.revision;
+  const family = select([['', 'Automatic'], ...data.families.filter(x => x.available && x.id).map(x => [x.id, x.label])], data.family || '');
   const version = select([['', 'Automatic'], ...data.versions.map(x => [x.id, x.label])], data.version || '');
-  await formModal('Core choice', [field('Compatible core', family), game ? notice('Core version follows this game’s system.') : field('Core version', version)], async () => {
-    await edit('core-select', { system, game, family: family.value || null, version: game ? null : version.value || null }); closeModal();
+  await formModal('Core choice', [field('Compatible core', family), field('Core version', version)], async () => {
+    await edit('core-select', { system, family: family.value || null, version: version.value || null }); closeModal();
+  });
+}
+function gameCorePicker(item, data, version) {
+  const title = version ? 'Core Version' : 'Compatible core';
+  const rows = (version ? data.versions : data.families).filter(row => row.id);
+  const picker = select([['', 'Use System Setting'], ...rows.map(row => [row.id, row.label])], (version ? data.game_version : data.family) || '');
+  for (let i = 0; i < rows.length; i++) picker.options[i + 1].disabled = !rows[i].available;
+  const fields = [field(title, picker)];
+  if (version && data.version_notice) fields.push(notice(data.version_notice));
+  return formModal(title, fields, async () => {
+    const target = { revision: data.revision, system: item.system, game: item.id };
+    if (version) await edit('game-core-version', { ...target, version: picker.value || null });
+    else await edit('core-select', { ...target, family: picker.value || null });
+    closeModal();
   });
 }
 async function addFavorite(item) {

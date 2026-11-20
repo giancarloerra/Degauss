@@ -955,7 +955,7 @@ name = "Laser 350/500/700"
 id = "Laser"
 folders = ["Laser"]
 rbf = "_Computer/Laser310"
-extensions = ["vz", "mgl"]
+extensions = ["vz", "dsk", "cas", "wav", "mgl"]
 
 [[systems.launch]]
 extensions = ["vz"]
@@ -963,17 +963,35 @@ type = "f"
 index = 1
 delay = 1
 
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas", "wav"]
+type = "s"
+index = 0
+delay = 1
+
 [[systems]]
 name = "Lynx 48/96K"
 id = "Lynx48"
 folders = ["Lynx48"]
 rbf = "_Computer/Lynx48"
-extensions = ["tap", "mgl"]
+extensions = ["tap", "tzx", "wav", "ldf", "mgl"]
 
 [[systems.launch]]
-extensions = ["tap"]
+extensions = ["tap", "tzx", "wav"]
 type = "f"
 index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["ldf"]
+type = "s"
+index = 0
 delay = 1
 
 [[systems]]
@@ -1665,7 +1683,15 @@ name = "SV-328"
 id = "SVI328"
 folders = ["SVI328"]
 rbf = "_Computer/Svi328"
-extensions = ["cas", "bin", "rom", "mgl"]
+extensions = ["cas", "bin", "rom", "dsk", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+reset_delay = 1
+reset_hold = 1
 
 [[systems.launch]]
 extensions = ["bin", "rom"]

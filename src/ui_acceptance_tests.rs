@@ -265,6 +265,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         image_override: None,
         game_data_source: true,
         game_launch_core: true,
+        game_core_version: true,
         artwork_pack_match: false,
         launch_core: true,
         core_version: true,
@@ -323,6 +324,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         actual.extend(labels);
     }
     let expected: std::collections::BTreeSet<_> = [
+        GAME_CORE_VERSION,
         GAME_INFORMATION,
         RANDOM,
         RANDOM_FAVORITE,
@@ -5991,6 +5993,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         image_override: None,
         game_data_source: true,
         game_launch_core: true,
+        game_core_version: true,
         artwork_pack_match: false,
         launch_core: true,
         core_version: true,
