@@ -304,6 +304,41 @@ pub fn has_home_relative_paths(path: &Path) -> Result<bool> {
     }
 }
 
+pub(crate) fn mgl_game_folders(system: &crate::config::SystemConfig) -> Vec<PathBuf> {
+    std::iter::once(&system.path)
+        .chain(system.extra_paths.iter())
+        .filter(|folder| !folder.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Resolve the same file when checking a favourite and when relocating its XML.
+pub(crate) fn resolve_mgl_file(
+    raw: &str,
+    original: &Path,
+    system: &crate::config::SystemConfig,
+    folders: &[PathBuf],
+) -> Result<PathBuf> {
+    // An unzipped Neo Geo ROM set is a folder Main starts as one game.
+    let romset_homes = if crate::neogeo::is_romset_system(system) {
+        folders
+    } else {
+        &[]
+    };
+    match crate::mgl::component_with_romset_homes(raw, folders, true, romset_homes) {
+        crate::mgl::Component::Absolute(target)
+        | crate::mgl::Component::RootRelative(target)
+        | crate::mgl::Component::Home(target) => Ok(target),
+        crate::mgl::Component::Missing { .. } => Err(DegaussError::unsupported(
+            "favourite file",
+            format!("cannot resolve {raw:?} in {} game folders", system.name),
+        )),
+        crate::mgl::Component::Ambiguous { existing, .. } => {
+            Err(crate::mgl::ambiguous_error(original, raw, &existing))
+        }
+    }
+}
+
 /// Relocating an MGL must not change the meaning of its relative file paths.
 /// Replace only path attribute values, preserving other actions and attributes.
 ///
@@ -319,13 +354,7 @@ pub fn relocate_mgl(
         .ok()
         .map(|target| resolve_link_target(original, target));
     let original = linked.as_deref().unwrap_or(original);
-    let folders: Vec<PathBuf> = std::iter::once(&system.path)
-        .chain(system.extra_paths.iter())
-        .filter(|folder| !folder.is_empty())
-        .map(PathBuf::from)
-        .collect();
-    // An unzipped Neo Geo ROM set is a folder Main starts as one game.
-    let romset = crate::neogeo::is_romset_system(system);
+    let folders = mgl_game_folders(system);
     let mut reader = Reader::from_str(text);
     let mut patches = Vec::new();
     loop {
@@ -346,26 +375,7 @@ pub fn relocate_mgl(
                     if raw.starts_with('/') {
                         continue;
                     }
-                    let romset_homes = if romset { folders.as_slice() } else { &[] };
-                    let target = match crate::mgl::component_with_romset_homes(
-                        &raw,
-                        &folders,
-                        true,
-                        romset_homes,
-                    ) {
-                        crate::mgl::Component::Absolute(target)
-                        | crate::mgl::Component::RootRelative(target)
-                        | crate::mgl::Component::Home(target) => target,
-                        crate::mgl::Component::Missing { .. } => {
-                            return Err(DegaussError::unsupported(
-                                "favourite file",
-                                format!("cannot resolve {raw:?} in {} game folders", system.name),
-                            ));
-                        }
-                        crate::mgl::Component::Ambiguous { existing, .. } => {
-                            return Err(crate::mgl::ambiguous_error(original, &raw, &existing));
-                        }
-                    };
+                    let target = resolve_mgl_file(&raw, original, system, &folders)?;
                     // The raw attribute value is a borrowed slice of the input.
                     let bytes = a.value.as_ref();
                     let offset = bytes.as_ptr() as usize - text.as_ptr() as usize;

@@ -1061,14 +1061,18 @@ pub fn plan_with_selections(
         let Some(source_family) = crate::core_variants::favorite_family(game, system)? else {
             return plan_self_describing(system, game, mgl_path, menu_root);
         };
-        let referenced = crate::favorites::descriptor_reference(game, "favourite MGL")?
-            .files
-            .last()
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute());
-        if let Some(target) = referenced.as_deref() {
-            validate_svi_disk(system, target)?;
+        let descriptor = crate::favorites::descriptor_reference(game, "favourite MGL")?;
+        let last = descriptor.files.last();
+        if let Some(raw) = last.filter(|raw| system.is_svi_disk(Path::new(raw))) {
+            let target = crate::favorites::resolve_mgl_file(
+                raw,
+                game,
+                system,
+                &crate::favorites::mgl_game_folders(system),
+            )?;
+            validate_svi_disk(system, &target)?;
         }
+        let referenced = last.map(PathBuf::from).filter(|path| path.is_absolute());
         if let Some(launcher) = referenced
             .as_deref()
             .map(|path| amiga_vision_cd32_mgl(system, path, menu_root))
@@ -1991,12 +1995,22 @@ mod tests {
         let saved = favorite_mgl_with_selections(&svi, &target, &root, false, None, None)
             .unwrap()
             .unwrap();
-        std::fs::write(&favorite, &saved).unwrap();
-        assert!(plan_with_selections(&svi, &favorite, &output, &root, false, None, None).is_ok());
+        let relative = saved.replace(target.to_str().unwrap(), "Single.dsk");
+        assert_ne!(relative, saved);
+        for xml in [&saved, &relative] {
+            std::fs::write(&favorite, xml).unwrap();
+            assert!(
+                plan_with_selections(&svi, &favorite, &output, &root, false, None, None).is_ok()
+            );
+        }
         std::fs::write(&target, b"not a raw SV-328 disk").unwrap();
-        let result = plan_with_selections(&svi, &favorite, &output, &root, false, None, None);
-        assert!(result.unwrap_err().to_string().contains("172032"));
-        assert_eq!(std::fs::read_to_string(&favorite).unwrap(), saved);
+        let archived = saved.replace(target.to_str().unwrap(), "Inside.zip/Wrong.dsk");
+        for xml in [saved, relative, archived] {
+            std::fs::write(&favorite, &xml).unwrap();
+            let result = plan_with_selections(&svi, &favorite, &output, &root, false, None, None);
+            assert!(result.unwrap_err().to_string().contains("172032"));
+            assert_eq!(std::fs::read_to_string(&favorite).unwrap(), xml);
+        }
         #[cfg(unix)]
         {
             let link = root.join("Removed disk.dsk");
