@@ -358,9 +358,13 @@ impl SystemConfig {
             return Ok(false);
         }
         if self.is_svi_disk(path) {
-            let size = std::fs::metadata(path)
-                .map_err(|e| DegaussError::io("SV-328 disk size", path, e))?
-                .len();
+            let size = match std::fs::metadata(path) {
+                Ok(metadata) => metadata.len(),
+                // Match the browser's existing handling of dangling links and
+                // entries removed between the directory read and this check.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(DegaussError::io("SV-328 disk size", path, error)),
+            };
             return Ok(Self::svi_disk_size(size));
         }
         Ok(true)

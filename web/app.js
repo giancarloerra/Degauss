@@ -608,12 +608,12 @@ function randomMenu(scope) {
     modal('Random', button('Random Game', () => pick(false)), button('Random Favourite', () => pick(true)));
   });
 }
-async function coreChoices(system) {
-  const data = await command('core-choices', { system }); state.revision = data.revision;
-  const family = select([['', 'Automatic'], ...data.families.filter(x => x.available && x.id).map(x => [x.id, x.label])], data.family || '');
+async function coreChoices(system, game = null) {
+  const data = await command('core-choices', { system, game }); state.revision = data.revision;
+  const family = select([['', game ? 'Follow system' : 'Automatic'], ...data.families.filter(x => x.available).map(x => [x.id, x.label])], data.family || '');
   const version = select([['', 'Automatic'], ...data.versions.map(x => [x.id, x.label])], data.version || '');
-  await formModal('Core choice', [field('Compatible core', family), field('Core version', version)], async () => {
-    await edit('core-select', { system, family: family.value || null, version: version.value || null }); closeModal();
+  await formModal('Core choice', [field('Compatible core', family), game ? notice('Core version follows this game’s system.') : field('Core version', version)], async () => {
+    await edit('core-select', { system, game, family: family.value || null, version: game ? null : version.value || null }); closeModal();
   });
 }
 function gameCorePicker(item, data, version) {

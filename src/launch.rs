@@ -1066,6 +1066,9 @@ pub fn plan_with_selections(
             .last()
             .map(PathBuf::from)
             .filter(|path| path.is_absolute());
+        if let Some(target) = referenced.as_deref() {
+            validate_svi_disk(system, target)?;
+        }
         if let Some(launcher) = referenced
             .as_deref()
             .map(|path| amiga_vision_cd32_mgl(system, path, menu_root))
@@ -1978,6 +1981,36 @@ mod tests {
         );
         assert!(laser.accepts_fs_file(&root.join("Other.dsk")).unwrap());
         assert!(laser.accepts(&root.join("blank_tape_64k.cas")));
+        // A favourite represents the same disk even if it was replaced after it was saved.
+        let cores = root.join("_Computer");
+        std::fs::create_dir(&cores).unwrap();
+        std::fs::write(cores.join("Svi328_20261118.rbf"), b"core discovery").unwrap();
+        let target = root.join("Single.dsk");
+        let favorite = root.join("Saved.mgl");
+        let output = root.join("launch.mgl");
+        let saved = favorite_mgl_with_selections(&svi, &target, &root, false, None, None)
+            .unwrap()
+            .unwrap();
+        std::fs::write(&favorite, &saved).unwrap();
+        assert!(plan_with_selections(&svi, &favorite, &output, &root, false, None, None).is_ok());
+        std::fs::write(&target, b"not a raw SV-328 disk").unwrap();
+        let result = plan_with_selections(&svi, &favorite, &output, &root, false, None, None);
+        assert!(result.unwrap_err().to_string().contains("172032"));
+        assert_eq!(std::fs::read_to_string(&favorite).unwrap(), saved);
+        #[cfg(unix)]
+        {
+            let link = root.join("Removed disk.dsk");
+            std::os::unix::fs::symlink(root.join("no longer present"), &link).unwrap();
+            assert!(!svi.accepts_fs_file(&link).unwrap());
+            assert!(
+                lib.list(&lib.start(), false).is_ok(),
+                "a dangling disk must not abort indexing"
+            );
+            assert!(
+                plan(&svi, &link, &output).is_err(),
+                "an explicitly launched missing disk still fails"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
