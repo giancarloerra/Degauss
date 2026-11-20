@@ -308,10 +308,10 @@ impl SystemConfig {
         };
         let ext = ext.to_ascii_lowercase();
         if ext == "cas"
-            && self.rbf.eq_ignore_ascii_case("_Computer/Svi328")
             && path
                 .file_name()
                 .is_some_and(|n| n.eq_ignore_ascii_case("blank_tape_64k.cas"))
+            && self.is_svi328()
         {
             return false;
         }
@@ -338,11 +338,15 @@ impl SystemConfig {
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
     }
 
+    pub(crate) fn is_svi328(&self) -> bool {
+        // A pinned build in the SV-328 family uses the same hardware geometry.
+        crate::systems::undated_core_stem(&self.rbf).eq_ignore_ascii_case("_Computer/Svi328")
+    }
+
     pub fn is_svi_disk(&self, path: &Path) -> bool {
-        self.rbf.eq_ignore_ascii_case("_Computer/Svi328")
-            && path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("dsk"))
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dsk"))
+            && self.is_svi328()
     }
 
     pub fn accepts_sized(&self, path: &Path, bytes: u64) -> bool {

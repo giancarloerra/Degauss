@@ -1062,17 +1062,20 @@ pub fn plan_with_selections(
             return plan_self_describing(system, game, mgl_path, menu_root);
         };
         let descriptor = crate::favorites::descriptor_reference(game, "favourite MGL")?;
-        let last = descriptor.files.last();
-        if let Some(raw) = last.filter(|raw| system.is_svi_disk(Path::new(raw))) {
-            let target = crate::favorites::resolve_mgl_file(
-                raw,
-                game,
-                system,
-                &crate::favorites::mgl_game_folders(system),
-            )?;
-            validate_svi_disk(system, &target)?;
+        if system.is_svi328() {
+            let folders = crate::favorites::mgl_game_folders(system);
+            for raw in &descriptor.files {
+                if system.is_svi_disk(Path::new(raw)) {
+                    let target = crate::favorites::resolve_mgl_file(raw, game, system, &folders)?;
+                    validate_svi_disk(system, &target)?;
+                }
+            }
         }
-        let referenced = last.map(PathBuf::from).filter(|path| path.is_absolute());
+        let referenced = descriptor
+            .files
+            .last()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
         if let Some(launcher) = referenced
             .as_deref()
             .map(|path| amiga_vision_cd32_mgl(system, path, menu_root))
@@ -1985,6 +1988,19 @@ mod tests {
         );
         assert!(laser.accepts_fs_file(&root.join("Other.dsk")).unwrap());
         assert!(laser.accepts(&root.join("blank_tape_64k.cas")));
+        let mut pinned = svi.clone();
+        pinned.rbf = "_Computer/Svi328_20261118".into();
+        assert!(!pinned.accepts_fs_file(&root.join("Other.dsk")).unwrap());
+        assert!(!pinned.accepts_sized(Path::new("Archived.dsk"), 1_024));
+        assert!(!pinned.accepts(&root.join("blank_tape_64k.cas")));
+        assert!(pinned.accepts_fs_file(&root.join("Double.DSK")).unwrap());
+        assert!(plan(&pinned, &root.join("Other.dsk"), &root.join("launch.mgl")).is_err());
+        let mut unrelated = svi.clone();
+        for reference in ["_Computer/Svi328Other_20261118", "_Other/Svi328_20261118"] {
+            unrelated.rbf = reference.into();
+            assert!(unrelated.accepts_sized(Path::new("Other.dsk"), 1_024));
+            assert!(unrelated.accepts(Path::new("blank_tape_64k.cas")));
+        }
         // A favourite represents the same disk even if it was replaced after it was saved.
         let cores = root.join("_Computer");
         std::fs::create_dir(&cores).unwrap();
@@ -2002,6 +2018,23 @@ mod tests {
             assert!(
                 plan_with_selections(&svi, &favorite, &output, &root, false, None, None).is_ok()
             );
+        }
+        // The final entry is valid in both cases; the earlier drive must also be checked.
+        for (disk, valid) in [("Double.DSK", true), ("Other.dsk", false)] {
+            let multi = relative.replacen(
+                "<file ",
+                &format!("<file delay=\"1\" type=\"s\" index=\"1\" path=\"{disk}\"/>\n<file "),
+                1,
+            );
+            assert_ne!(multi, relative);
+            std::fs::write(&favorite, &multi).unwrap();
+            let result = plan_with_selections(&svi, &favorite, &output, &root, false, None, None);
+            if valid {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.unwrap_err().to_string().contains("172032"));
+            }
+            assert_eq!(std::fs::read_to_string(&favorite).unwrap(), multi);
         }
         std::fs::write(&target, b"not a raw SV-328 disk").unwrap();
         let archived = saved.replace(target.to_str().unwrap(), "Inside.zip/Wrong.dsk");
