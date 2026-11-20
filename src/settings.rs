@@ -510,6 +510,9 @@ pub struct Settings {
     /// Missing systems and games inherit the per-system Launch Core setting.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub game_launch_cores: BTreeMap<String, BTreeMap<String, String>>,
+    /// Explicit versions for individual games; absent entries inherit Core Version.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub game_core_versions: BTreeMap<String, BTreeMap<String, String>>,
     /// Manual Artwork Pack index names, keyed by owning system and logical
     /// game launch. Empty on existing installations; ignored by Gamelist.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1476,6 +1479,10 @@ mod tests {
         let old: Settings =
             toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
         assert!(old.game_launch_cores.is_empty());
+        assert!(old.game_core_versions.is_empty());
+        assert!(!toml::to_string(&old)
+            .unwrap()
+            .contains("game_core_versions"));
         assert!(!toml::to_string(&Settings::default())
             .unwrap()
             .contains("game_launch_cores"));

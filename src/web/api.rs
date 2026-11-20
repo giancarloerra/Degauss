@@ -177,6 +177,13 @@ pub enum Command {
         family: Option<String>,
         version: Option<String>,
     },
+    GameCoreVersion {
+        revision: String,
+        system: String,
+        game: String,
+        #[serde(deserialize_with = "Option::deserialize")]
+        version: Option<String>,
+    },
     Job {
         id: u64,
     },

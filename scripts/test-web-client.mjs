@@ -47,6 +47,38 @@ function section(from, to) {
   return source.slice(start, end);
 }
 
+test('opening game Actions reads core choices once, without showing redundant or fixed-core pickers', async () => {
+  for (const [eligible, choose_family, labels] of [[true,false,['Core Version']], [true,true,['Compatible core','Core Version']], [false,false,[]]]) {
+    let replaced, calls = 0;
+    const ctx = vm.createContext({
+      el: () => ({ replaceWith: (...items) => { replaced = items; } }), button: label => label,
+      modal() {}, $: () => ({ open:true, contains:() => true }),
+      command: async (action, args) => { assert.equal(action,'core-choices'); assert.equal(args.game,'selected'); calls++; return { eligible,choose_family }; },
+    });
+    vm.runInContext(section('async function gameActions(', '\nasync function systemActions('),ctx);
+    await ctx.gameActions({name:'Game',id:'selected',system:'NES'});
+    assert.deepEqual(replaced,labels);
+    assert.equal(calls,1);
+  }
+});
+
+test('a missing saved game version stays visible and clearing it never writes the core family', async () => {
+  let chooser, save, sent;
+  const ctx=vm.createContext({
+    select: (rows, initial) => (chooser=context.select(rows,initial)),
+    field: () => ({}), notice: () => ({}), closeModal() {},
+    formModal: (_title,_fields,submit) => { save=submit; },
+    edit: async (action,values) => { sent={action,...values}; },
+  });
+  vm.runInContext(section('function gameCorePicker(', '\nasync function addFavorite('), ctx);
+  ctx.gameCorePicker({system:'NES',id:'game'},{revision:'r', game_version:'missing', versions:[{id:'missing',label:'Missing (Unavailable)',available:false}]},true);
+  assert.equal(chooser.value,'missing');
+  assert.equal(chooser.options[1].disabled,true);
+  chooser.value='';
+  await save();
+  assert.deepEqual(sent,{action:'game-core-version',revision:'r',system:'NES',game:'game',version:null});
+});
+
 test('web settings re-read the applied option before reporting a failed or incomplete Arcade check', async () => {
   for (const outcome of ['success', 'warning', 'failed']) {
     const events = [];

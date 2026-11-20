@@ -1302,6 +1302,8 @@ const SCRAPE_FOLDER: &str = "Scrape This Folder";
 const SCRAPE_GAME: &str = "Scrape This Game";
 const GAME_DATA_SOURCE: &str = "Game Data Source";
 const GAME_LAUNCH_CORE: &str = "Launch Core";
+// Separate action identity from the system-level row with the same visible label.
+const GAME_CORE_VERSION: &str = "Game Core Version";
 const SYSTEM_LAUNCH_CORE: &str = "System Launch Core";
 const CORE_VERSION: &str = "Core Version";
 const USE_DEFAULT_CORE_VERSION: &str = "Use Default Core Version";
@@ -2128,6 +2130,7 @@ struct ContextActions {
     image_override: Option<bool>,
     game_data_source: bool,
     game_launch_core: bool,
+    game_core_version: bool,
     artwork_pack_match: bool,
     launch_core: bool,
     core_version: bool,
@@ -2149,6 +2152,7 @@ struct GameLaunchCoreTarget {
 enum LaunchCoreTarget {
     System(String),
     Game(GameLaunchCoreTarget),
+    GameVersion(GameLaunchCoreTarget),
 }
 
 impl LaunchCoreTarget {
@@ -2156,6 +2160,7 @@ impl LaunchCoreTarget {
         match self {
             Self::System(_) => SYSTEM_LAUNCH_CORE,
             Self::Game(_) => GAME_LAUNCH_CORE,
+            Self::GameVersion(_) => GAME_CORE_VERSION,
         }
     }
 }
@@ -2168,6 +2173,7 @@ impl Default for ContextActions {
             image_override: None,
             game_data_source: false,
             game_launch_core: false,
+            game_core_version: false,
             artwork_pack_match: false,
             launch_core: false,
             core_version: false,
@@ -2221,6 +2227,7 @@ impl ContextPage {
                 GAME_INFORMATION
                     | FOCUS_INFORMATION
                     | GAME_LAUNCH_CORE
+                    | GAME_CORE_VERSION
                     | ARTWORK_PACK_MATCH
                     | RANDOM
                     | RANDOM_FAVORITE
@@ -2299,6 +2306,7 @@ fn context_help(action: &str) -> &'static str {
         SCRAPE_FOLDER => "Open scraping settings for this folder and its contents.",
         SCRAPE_GAME => "Scrape the selected game or search manually for a different match.",
         GAME_LAUNCH_CORE => "Choose a compatible core for this game only.",
+        GAME_CORE_VERSION => "Choose a core version for this game only, or follow its system.",
         SYSTEM_LAUNCH_CORE => "Choose among the compatible core families declared for this system.",
         CORE_VERSION => "Choose an installed core version for this system, or use Default.",
         USE_DEFAULT_CORE_VERSION => {
@@ -2360,13 +2368,20 @@ fn context_entries(
 ) -> Vec<String> {
     let mut groups: Vec<Vec<String>> = Vec::new();
 
-    if favorite.is_some() || actions.game_launch_core || actions.artwork_pack_match {
+    if favorite.is_some()
+        || actions.game_launch_core
+        || actions.game_core_version
+        || actions.artwork_pack_match
+    {
         let mut game = Vec::new();
         if favorite.is_some() {
             game.push(GAME_INFORMATION.to_string());
         }
         if actions.game_launch_core {
             game.push(GAME_LAUNCH_CORE.to_string());
+        }
+        if actions.game_core_version {
+            game.push(GAME_CORE_VERSION.to_string());
         }
         if actions.artwork_pack_match {
             game.push(ARTWORK_PACK_MATCH.to_string());
@@ -10293,10 +10308,14 @@ impl App {
             .clone()
             .or_else(|| self.core_system_id())
             .or_else(|| self.open_system.clone());
-        let selected_core = core_system
-            .as_ref()
-            .and_then(|id| self.settings.core_choices.get(id))
-            .map(String::as_str);
+        let selected_core = core_system.as_deref().and_then(|id| {
+            crate::game_launch_cores::effective_version(
+                &self.settings,
+                id,
+                &override_launch,
+                &config,
+            )
+        });
         let selected_family = core_system.as_deref().and_then(|id| {
             crate::game_launch_cores::effective(&self.settings, id, &override_launch)
         });
@@ -15017,6 +15036,14 @@ impl App {
             return ">".to_string();
         }
         match self.menu.get(index).map(String::as_str) {
+            Some(GAME_CORE_VERSION) => self
+                .selected_game_target(false)
+                .and_then(|t| {
+                    crate::game_launch_cores::saved_version(&self.settings, &t.system_id, &t.key)
+                })
+                .map(crate::game_launch_cores::version_label)
+                .unwrap_or("Use System Setting")
+                .to_string(),
             Some(GAME_LAUNCH_CORE) => self
                 .selected_game_launch_core_target()
                 .and_then(|target| {
@@ -15124,6 +15151,7 @@ impl App {
             action,
             GAME_INFORMATION
                 | GAME_LAUNCH_CORE
+                | GAME_CORE_VERSION
                 | ARTWORK_PACK_MATCH
                 | ADD_FAVORITE
                 | REMOVE_FAVORITE
@@ -15257,7 +15285,7 @@ impl App {
         })
     }
 
-    fn selected_game_launch_core_target(&self) -> Option<GameLaunchCoreTarget> {
+    fn selected_core_game(&self) -> Option<GameLaunchCoreTarget> {
         let target = self.selected_game_target(false)?;
         let config = self
             .all_systems
@@ -15267,15 +15295,23 @@ impl App {
         if !crate::launch::game_core_selectable(&config, &target.launch) {
             return None;
         }
-        let saved = self
-            .settings
+        Some(target)
+    }
+
+    fn selected_game_launch_core_target(&self) -> Option<GameLaunchCoreTarget> {
+        self.selected_core_game()
+            .filter(|target| self.game_family_action(target))
+    }
+
+    fn game_family_action(&self, target: &GameLaunchCoreTarget) -> bool {
+        self.settings
             .game_launch_cores
             .get(&target.system_id)
-            .is_some_and(|games| games.contains_key(&target.key));
-        if !crate::launch_cores::has_alternatives(&config) && !saved {
-            return None;
-        }
-        Some(target)
+            .is_some_and(|games| games.contains_key(&target.key))
+            || self
+                .all_systems
+                .iter()
+                .any(|s| s.def.id == target.system_id && !s.def.compatible_cores.is_empty())
     }
 
     fn selected_pack_match_target(&self) -> Option<GameLaunchCoreTarget> {
@@ -15488,14 +15524,51 @@ impl App {
                 .get(&target.system_id)
                 .map(String::as_str),
             selected.as_deref(),
-            self.settings
-                .core_choices
-                .get(&target.system_id)
-                .map(String::as_str),
+            crate::game_launch_cores::effective_version(
+                &self.settings,
+                &target.system_id,
+                &target.launch,
+                &config,
+            ),
             self.settings.core_preference.unwrap_or_default()
                 == crate::settings::CorePreference::RetroAchievementsFirst,
         );
         self.show_launch_core_choices(LaunchCoreTarget::Game(target), choices, selected.as_deref());
+    }
+
+    fn current_game_versions(
+        &self,
+        target: &GameLaunchCoreTarget,
+    ) -> Option<(Vec<crate::launch_cores::Choice>, Option<String>)> {
+        let system = self
+            .all_systems
+            .iter()
+            .find(|s| s.def.id == target.system_id)?;
+        Some(crate::game_launch_cores::version_choices(
+            &self.settings,
+            &target.system_id,
+            &target.key,
+            &system.to_config(),
+            Path::new(&self.config.menu_root),
+        ))
+    }
+
+    fn open_game_core_version(&mut self) {
+        let Some(target) = self.selected_core_game() else {
+            return;
+        };
+        let Some((choices, notice)) = self.current_game_versions(&target) else {
+            return;
+        };
+        let selected =
+            crate::game_launch_cores::saved_version(&self.settings, &target.system_id, &target.key)
+                .map(str::to_owned);
+        self.show_launch_core_choices(
+            LaunchCoreTarget::GameVersion(target),
+            choices,
+            selected.as_deref(),
+        );
+        self.message = notice;
     }
 
     fn choose_launch_core(&mut self) {
@@ -15511,6 +15584,42 @@ impl App {
         };
         let mut settings = self.settings.clone();
         match &target {
+            LaunchCoreTarget::GameVersion(game) => {
+                if !choice.id.is_empty() {
+                    // Web Access can change this game's family, or a build can
+                    // disappear while the native picker is open. Validate on save.
+                    let Some((current, notice)) = self.current_game_versions(game) else {
+                        self.message = Some("This game's system is no longer available.".into());
+                        self.dirty = true;
+                        return;
+                    };
+                    if !current
+                        .iter()
+                        .any(|row| row.id == choice.id && row.available)
+                    {
+                        let saved = crate::game_launch_cores::saved_version(
+                            &self.settings,
+                            &game.system_id,
+                            &game.key,
+                        )
+                        .map(str::to_owned);
+                        self.show_launch_core_choices(target.clone(), current, saved.as_deref());
+                        self.message = Some(notice.unwrap_or_else(|| {
+                            format!(
+                                "{} is unavailable for this game's compatible core.",
+                                choice.label
+                            )
+                        }));
+                        return;
+                    }
+                }
+                crate::game_launch_cores::set_version(
+                    &mut settings,
+                    &game.system_id,
+                    &game.key,
+                    (!choice.id.is_empty()).then_some(choice.id.as_str()),
+                );
+            }
             LaunchCoreTarget::System(id) if choice.id.is_empty() => {
                 settings.launch_cores.remove(id);
             }
@@ -15538,7 +15647,12 @@ impl App {
                 self.message = match outcome {
                     crate::settings::SaveOutcome::Durable => None,
                     crate::settings::SaveOutcome::InstalledWithWarning(warning) => {
-                        Some(format!("Launch Core: {}\n{warning}", choice.label))
+                        let setting = if matches!(target, LaunchCoreTarget::GameVersion(_)) {
+                            "Core Version"
+                        } else {
+                            "Launch Core"
+                        };
+                        Some(format!("{setting}: {}\n{warning}", choice.label))
                     }
                 };
             }
@@ -16603,11 +16717,22 @@ impl App {
         let selected_family = origin_launch.as_ref().and_then(|launch| {
             crate::game_launch_cores::effective(&self.settings, &origin_id, launch)
         });
-        let selected_core = self
-            .settings
-            .core_choices
-            .get(&origin_id)
-            .map(String::as_str);
+        let selected_core = origin_launch.as_ref().map_or_else(
+            || {
+                self.settings
+                    .core_choices
+                    .get(&origin_id)
+                    .map(String::as_str)
+            },
+            |launch| {
+                crate::game_launch_cores::effective_version(
+                    &self.settings,
+                    &origin_id,
+                    launch,
+                    &config,
+                )
+            },
+        );
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
         let name = self
@@ -19017,7 +19142,10 @@ impl App {
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
         let favorite_folder = self.selected_favorite_folder().is_some();
-        let game_launch_core = self.selected_game_launch_core_target().is_some();
+        let core_game = self.selected_core_game();
+        let game_launch_core = core_game
+            .as_ref()
+            .is_some_and(|t| self.game_family_action(t));
         let core_system = self.core_system_id();
         let launch_core = core_system.as_deref().is_some_and(|id| {
             self.all_systems
@@ -19037,6 +19165,7 @@ impl App {
                 image_override,
                 game_data_source,
                 game_launch_core,
+                game_core_version: core_game.is_some(),
                 artwork_pack_match: self.selected_pack_match_target().is_some(),
                 launch_core: !self.last_played_open && launch_core,
                 core_version: !self.last_played_open && core_system.is_some(),
@@ -21437,6 +21566,8 @@ impl App {
                         self.use_default_core_version();
                     } else if choice == GAME_LAUNCH_CORE {
                         self.open_game_launch_core();
+                    } else if choice == GAME_CORE_VERSION {
+                        self.open_game_core_version();
                     } else if choice == ARTWORK_PACK_MATCH {
                         self.open_pack_matches();
                     } else if choice == SYSTEM_LAUNCH_CORE {
@@ -22634,7 +22765,7 @@ impl App {
                     } else {
                         self.context_value(index)
                     };
-                    if self.menu[index] == CORE_VERSION {
+                    if matches!(self.menu[index].as_str(), CORE_VERSION | GAME_CORE_VERSION) {
                         // Full nightly paths use the existing title marquee on small screens.
                         rows.push(plain_row(&format!("{CORE_VERSION}: {value}"), ""));
                     } else {
@@ -22944,7 +23075,9 @@ impl App {
                     .launch_core_target
                     .as_ref()
                     .map(|target| match target {
-                        LaunchCoreTarget::Game(game) => game.name.clone(),
+                        LaunchCoreTarget::Game(game) | LaunchCoreTarget::GameVersion(game) => {
+                            game.name.clone()
+                        }
                         LaunchCoreTarget::System(id) => self
                             .all_systems
                             .iter()
@@ -23020,7 +23153,9 @@ impl App {
                     .launch_core_target
                     .as_ref()
                     .map(|target| match target {
-                        LaunchCoreTarget::Game(game) => game.name.clone(),
+                        LaunchCoreTarget::Game(game) | LaunchCoreTarget::GameVersion(game) => {
+                            game.name.clone()
+                        }
                         LaunchCoreTarget::System(id) => self
                             .all_systems
                             .iter()
@@ -23278,6 +23413,10 @@ impl App {
                 "A Select, B Back, Left/Right Page".to_string(),
             ),
             Screen::LaunchCore => {
+                let version = matches!(
+                    self.launch_core_target,
+                    Some(LaunchCoreTarget::GameVersion(_))
+                );
                 let game = matches!(
                     self.launch_core_target.as_ref(),
                     Some(LaunchCoreTarget::Game(_))
@@ -23286,7 +23425,11 @@ impl App {
                     .launch_core_choices
                     .get(self.menu_list.selected())
                     .map(|choice| {
-                        if choice.id.is_empty() {
+                        if version {
+                            if choice.id.is_empty() { "Use this system's Core Version setting." }
+                            else if !choice.available { "This version is unavailable. Select an installed version or Use System Setting." }
+                            else { "Use this installed core version for this game only." }
+                        } else if choice.id.is_empty() {
                             if game {
                                 "Use this game's system Launch Core setting."
                             } else {
@@ -23303,7 +23446,15 @@ impl App {
                         }
                     })
                     .unwrap_or_default();
-                ("Launch Core".to_string(), detail.to_string())
+                (
+                    if version {
+                        "Core Version"
+                    } else {
+                        "Launch Core"
+                    }
+                    .to_string(),
+                    detail.to_string(),
+                )
             }
             Screen::GameDataSource => (
                 if self.source_choice_is_shared() {
@@ -25744,6 +25895,152 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
 
+    {
+        // Use the same registered ZIP member through both interfaces. Family
+        // writes from pre-1.2.3 API clients must not clear the new version.
+        let settings_before = app.settings.clone();
+        let row = app.browse_row(app.game_list.selected()).cloned().unwrap();
+        let web_id = app.web_register(
+            crate::home::Target::Game {
+                system: "NES".into(),
+                launch: member.clone(),
+            },
+            Some(row),
+        );
+        let set_version = |app: &mut App, value: Option<&str>| {
+            app.web_edit_command(WebCommand::GameCoreVersion {
+                revision: app.web_revision(),
+                system: "NES".into(),
+                game: web_id.clone(),
+                version: value.map(str::to_owned),
+            })
+            .unwrap()
+        };
+        app.settings
+            .core_choices
+            .insert("NES".into(), "standard".into());
+        let ra = set_version(&mut app, Some("ra"));
+        assert_eq!(ra["version"], "standard");
+        assert_eq!(ra["game_version"], "ra");
+        assert!(mgl(&mut app).contains("_RA_Cores/Cores/NES"));
+        assert_eq!(
+            crate::game_launch_cores::effective_version(
+                &app.settings,
+                "NES",
+                &other_member,
+                &app.all_systems[0].to_config()
+            ),
+            Some("standard")
+        );
+        app.reopen_context_for(GAME_CORE_VERSION);
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::LaunchCore);
+        assert_eq!(app.menu[app.menu_list.selected()], "RetroAchievements");
+        app.menu_list
+            .select(app.menu.iter().position(|s| s == nightly).unwrap());
+        let web_family = |app: &mut App, family: Option<&str>| {
+            app.web_edit_command(WebCommand::CoreSelect {
+                revision: app.web_revision(),
+                system: "NES".into(),
+                game: Some(web_id.clone()),
+                family: family.map(str::to_owned),
+                version: None,
+            })
+            .unwrap()
+        };
+        web_family(&mut app, Some("legacy-nes"));
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::LaunchCore);
+        assert!(app
+            .message
+            .as_deref()
+            .is_some_and(|s| s.contains("unavailable")));
+        assert_eq!(
+            Settings::load(&app.settings_path)
+                .unwrap()
+                .game_core_versions["NES"][&member_key],
+            "ra"
+        );
+        assert!(!app
+            .launch_core_choices
+            .iter()
+            .any(|c| c.id == nightly && c.available));
+        app.handle(Action::Quit); // dismiss the stale-choice message
+        web_family(&mut app, None);
+        app.reopen_context_for(GAME_CORE_VERSION);
+        app.handle(Action::Accept);
+        app.menu_list
+            .select(app.menu.iter().position(|s| s == nightly).unwrap());
+        app.handle(Action::Accept);
+        assert_eq!(
+            Settings::load(&app.settings_path)
+                .unwrap()
+                .game_core_versions["NES"][&member_key],
+            nightly
+        );
+        assert_eq!(
+            app.web_core_choices("NES", Some(&web_id)).unwrap()["game_version"],
+            nightly
+        );
+        assert!(mgl(&mut app).contains(nightly.trim_end_matches(".rbf")));
+        let offline = root.join("_Unstable/temporarily-removed");
+        std::fs::rename(root.join(nightly), &offline).unwrap();
+        assert!(app.confirm_launch().is_none());
+        assert!(app.message.take().is_some());
+        let stale = app.web_core_choices("NES", Some(&web_id)).unwrap();
+        assert!(stale["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == nightly && c["available"] == false));
+        assert_eq!(set_version(&mut app, None)["game_version"], JsonValue::Null);
+        assert!(mgl(&mut app).contains("_Console/NES"));
+        std::fs::rename(offline, root.join(nightly)).unwrap();
+        app.settings.core_choices.insert("NES".into(), "ra".into());
+        set_version(&mut app, Some("standard"));
+        let old_client = WebCommand::CoreSelect {
+            revision: app.web_revision(),
+            system: "NES".into(),
+            game: Some(web_id.clone()),
+            family: Some("legacy-nes".into()),
+            version: None,
+        };
+        let legacy = app.web_edit_command(old_client).unwrap();
+        assert_eq!(legacy["game_version"], "standard");
+        assert!(
+            !legacy["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == "ra" || c["id"] == nightly),
+            "only builds matching the selected family"
+        );
+        assert!(mgl(&mut app).contains("_Arcade/LegacyNES"));
+        std::fs::remove_file(root.join("_Arcade/LegacyNES.rbf")).unwrap();
+        assert_eq!(
+            app.web_core_choices("NES", Some(&web_id)).unwrap()["choose_family"],
+            true,
+            "a stale family must remain clearable"
+        );
+        app.web_edit_command(WebCommand::CoreSelect {
+            revision: app.web_revision(),
+            system: "NES".into(),
+            game: Some(web_id.clone()),
+            family: None,
+            version: None,
+        })
+        .unwrap();
+        assert_eq!(
+            app.web_core_choices("NES", Some(&web_id)).unwrap()["choose_family"],
+            false,
+            "one usable family has no redundant action"
+        );
+        assert!(mgl(&mut app).contains("_Console/NES"));
+        assert_eq!(set_version(&mut app, None)["game_version"], JsonValue::Null);
+        assert!(mgl(&mut app).contains("_RA_Cores/Cores/NES"));
+        std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"legacy").unwrap();
+        app.web_save(settings_before).unwrap();
+    }
     app.reopen_context_for(CORE_VERSION);
     assert!(app.menu.iter().any(|row| row == CORE_VERSION));
     app.menu_list

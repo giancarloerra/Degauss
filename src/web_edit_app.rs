@@ -108,16 +108,24 @@ impl App {
         system: &str,
         game: Option<&str>,
     ) -> std::result::Result<JsonValue, WebError> {
-        let resolved = game.map(|id| self.web_game_target(id)).transpose()?;
+        let resolved = game.map(|id| self.web_game_identity(id)).transpose()?;
         if let Some(id) = game {
             if !matches!(&self.web.targets[id].target,crate::home::Target::Game{system:owner,..} if owner==system)
             {
                 return Err(web_error("The game does not belong to this system."));
             }
         }
+        let ineligible = || json!({
+            "families": [], "versions": [], "family": null, "version": null,
+            "game_version": null, "eligible": false, "choose_family": false,
+            "revision": self.web_revision(), "game": game
+        });
+        if matches!(&resolved, Some((None, _, _))) {
+            return Ok(ineligible());
+        }
         let system = resolved
             .as_ref()
-            .map(|(system, _, _)| system.as_str())
+            .and_then(|(system, _, _)| system.as_deref())
             .unwrap_or(system);
         let found = self
             .all_systems
@@ -126,6 +134,11 @@ impl App {
             .ok_or_else(|| web_error("System is unavailable."))?;
         let config = found.to_config();
         let game_launch = resolved.as_ref().map(|(_, launch, _)| launch);
+        if game_launch.is_some_and(|launch| {
+            config.rbf.is_empty() || !crate::launch::game_core_selectable(&config, launch)
+        }) {
+            return Ok(ineligible());
+        }
         let family = game_launch
             .and_then(|launch| {
                 self.settings
@@ -141,6 +154,10 @@ impl App {
                 }
             });
         let version = self.settings.core_choices.get(system);
+        let key = game_launch.map(crate::game_launch_cores::key);
+        let game_version = key.as_deref().and_then(|key| {
+            crate::game_launch_cores::saved_version(&self.settings, system, key)
+        });
         let root = Path::new(&self.config.menu_root);
         let ra = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
@@ -150,7 +167,7 @@ impl App {
                 root,
                 self.settings.launch_cores.get(system).map(String::as_str),
                 family.map(String::as_str),
-                version.map(String::as_str),
+                game_version.or(version.map(String::as_str)),
                 ra,
             )
         } else {
@@ -162,17 +179,24 @@ impl App {
                 ra,
             )
         };
+        let choose_family = game.is_some() && (family.is_some()
+            || choices.iter().filter(|c| c.available && !c.id.is_empty()).count() > 1);
         let families: Vec<_> = choices
             .into_iter()
             .map(|choice| json!({"id":choice.id,"label":choice.label,"available":choice.available}))
             .collect();
-        let versions: Vec<_> = crate::core_choices::available(&config, root)
-            .map_err(web_error)?
-            .into_iter()
-            .map(|choice| json!({"id":choice.key,"label":choice.label}))
-            .collect();
+        let (versions, notice): (Vec<_>, _) = if let Some(key) = key {
+            let (versions, notice) =
+                crate::game_launch_cores::version_choices(&self.settings, system, &key, &config, root);
+            (versions.into_iter().filter(|c| !c.id.is_empty())
+                .map(|c| json!({"id": c.id, "label": c.label, "available": c.available}))
+                .collect(), notice)
+        } else {
+            (crate::core_choices::available(&config, root).map_err(web_error)?.into_iter()
+                .map(|c| json!({"id": c.key, "label": c.label})).collect(), None)
+        };
         Ok(
-            json!({"families":families,"versions":versions,"family":family,"version":version,"revision":self.web_revision(),"game":game}),
+            json!({"families":families,"versions":versions,"family":family,"version":version,"game_version":game_version,"version_notice":notice,"eligible":true,"choose_family":choose_family,"revision":self.web_revision(),"game":game}),
         )
     }
 
@@ -442,6 +466,26 @@ impl App {
             WebCommand::CoreChoices { system, game } => {
                 self.web_core_choices(&system, game.as_deref())
             }
+            WebCommand::GameCoreVersion { revision, system, game, version } => {
+                self.web_check_revision(&revision)?;
+                let choices = self.web_core_choices(&system, Some(&game))?;
+                if choices["eligible"] != true {
+                    return Err(web_error("This game does not select a core version."));
+                }
+                if let Some(id) = &version {
+                    if !choices["versions"].as_array().expect("versions").iter()
+                        .any(|c| c["id"] == *id && c["available"] == true) {
+                        return Err(web_error("This core version is not available for the game's compatible core."));
+                    }
+                }
+                let (owner, launch, _) = self.web_game_target(&game)?;
+                let mut settings = self.settings.clone();
+                crate::game_launch_cores::set_version(
+                    &mut settings, &owner, &crate::game_launch_cores::key(&launch), version.as_deref(),
+                );
+                self.web_save(settings)?;
+                self.web_core_choices(&system, Some(&game))
+            }
             WebCommand::CoreSelect {
                 revision,
                 system,
@@ -464,8 +508,11 @@ impl App {
                 }
                 let mut settings = self.settings.clone();
                 if let Some(game) = &game {
+                    if choices["eligible"] != true {
+                        return Err(web_error("This game does not select a compatible core."));
+                    }
                     if version.is_some() {
-                        return Err(web_error("Core Version is a per-system setting. A game can choose its compatible core family."));
+                        return Err(web_error("Use game-core-version to change only this game's Core Version."));
                     }
                     let (owner, launch, _) = self.web_game_target(game)?;
                     crate::game_launch_cores::set(

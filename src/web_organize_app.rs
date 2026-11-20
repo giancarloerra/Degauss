@@ -186,7 +186,7 @@ impl App {
                     .ok_or_else(|| web_error("The game's system is unavailable."))?;
                 let config = found.to_config();
                 let family = crate::game_launch_cores::effective(&self.settings, &system, &launch);
-                let version = self.settings.core_choices.get(&system).map(String::as_str);
+                let version = crate::game_launch_cores::effective_version(&self.settings,&system,&launch,&config);
                 let ra = self.settings.core_preference.unwrap_or_default()
                     == crate::settings::CorePreference::RetroAchievementsFirst;
                 let root = Path::new(&self.config.menu_root);

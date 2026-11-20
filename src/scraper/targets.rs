@@ -444,7 +444,7 @@ fn target_for(
             contents
                 .entries
                 .iter()
-                .filter(|entry| config.accepts(Path::new(&entry.name)))
+                .filter(|entry| config.accepts_sized(Path::new(&entry.name), entry.size))
                 .count()
                 == 1
         } else {

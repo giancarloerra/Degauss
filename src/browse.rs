@@ -726,7 +726,7 @@ impl Library {
                     .and_then(|contents| {
                         let mut supported = contents.entries.iter().filter(|entry| {
                             let member = Path::new(&entry.name);
-                            self.accepts_archive_member(&path, member)
+                            self.accepts_archive_member(&path, member, entry.size)
                                 && directory_depth.saturating_add(member.components().count())
                                     <= MAX_DEPTH
                         });
@@ -750,7 +750,7 @@ impl Library {
                 continue;
             }
 
-            if !self.config.accepts(&path) || is_not_a_game(&name) {
+            if !self.config.accepts_fs_file(&path)? || is_not_a_game(&name) {
                 continue;
             }
             stats.games += 1;
@@ -812,7 +812,9 @@ impl Library {
         };
         let supported: Vec<_> = entries
             .iter()
-            .filter(|entry| self.accepts_archive_member(archive, Path::new(&entry.name)))
+            .filter(|entry| {
+                self.accepts_archive_member(archive, Path::new(&entry.name), entry.size)
+            })
             .collect();
         let legacy_metadata = supported.len() == 1;
         let root = self.root_for(archive);
@@ -972,8 +974,8 @@ impl Library {
     /// An archive member is eligible only when the system can launch its
     /// extension and it is not one of the support files ordinary directory
     /// browsing already excludes.
-    fn accepts_archive_member(&self, archive: &Path, member: &Path) -> bool {
-        self.config.accepts(&archive.join(member))
+    fn accepts_archive_member(&self, archive: &Path, member: &Path, size: u64) -> bool {
+        self.config.accepts_sized(&archive.join(member), size)
             && member
                 .file_name()
                 .is_some_and(|name| !is_not_a_game(&name.to_string_lossy()))
@@ -1189,7 +1191,7 @@ impl Library {
             } else {
                 extension_of(&path)
             };
-            let accepted = !is_dir && self.config.accepts(&path);
+            let accepted = !is_dir && self.config.accepts_fs_file(&path)?;
             // A Neo Geo ROM set is a game whether zipped or not, so a folder
             // of nothing but sets is worth walking into; one the catalogue
             // hides would never be shown and is not, even where the

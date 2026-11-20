@@ -10,6 +10,7 @@ use crate::error::{DegaussError, Result};
 pub struct CoreChoice {
     pub key: String,
     pub label: String,
+    pub available: bool,
 }
 
 fn core_stem(reference: &str) -> &str {
@@ -165,6 +166,7 @@ fn walk_nightlies(
                 result.push(CoreChoice {
                     key: key.into(),
                     label: key.into(),
+                    available: true,
                 });
             }
         }
@@ -357,7 +359,7 @@ fn first_installed_family(system: &SystemConfig, root: &Path) -> Result<SystemCo
         .expect("every system has its preferred core family"))
 }
 
-fn available_for_family(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
+pub(crate) fn available_for_family(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
     if system.rbf.is_empty() {
         return Ok(Vec::new());
     }
@@ -366,17 +368,20 @@ fn available_for_family(system: &SystemConfig, root: &Path) -> Result<Vec<CoreCh
         choices.push(CoreChoice {
             key: "standard".into(),
             label: "Standard".into(),
+            available: true,
         });
     }
     match core_variants::installed_ra(system, root) {
         Ok(Some(_)) => choices.push(CoreChoice {
             key: "ra".into(),
             label: "RetroAchievements".into(),
+            available: true,
         }),
         Ok(None) => {}
         Err(error) => choices.push(CoreChoice {
             key: "ra".into(),
             label: format!("RetroAchievements unavailable: {error}"),
+            available: false,
         }),
     }
     choices.extend(nightlies(system, root)?);

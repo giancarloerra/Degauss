@@ -307,6 +307,14 @@ impl SystemConfig {
             return false;
         };
         let ext = ext.to_ascii_lowercase();
+        if ext == "cas"
+            && path
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("blank_tape_64k.cas"))
+            && self.is_svi328()
+        {
+            return false;
+        }
         if self.setname.as_deref() == Some("Atari2600") && ext == "bin" {
             let roots = std::iter::once(self.path.as_str())
                 .chain(self.extra_paths.iter().map(String::as_str))
@@ -328,6 +336,42 @@ impl SystemConfig {
             }
         }
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
+    }
+
+    pub(crate) fn is_svi328(&self) -> bool {
+        // A pinned build in the SV-328 family uses the same hardware geometry.
+        crate::systems::undated_core_stem(&self.rbf).eq_ignore_ascii_case("_Computer/Svi328")
+    }
+
+    pub fn is_svi_disk(&self, path: &Path) -> bool {
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dsk"))
+            && self.is_svi328()
+    }
+
+    pub fn accepts_sized(&self, path: &Path, bytes: u64) -> bool {
+        self.accepts(path) && (!self.is_svi_disk(path) || Self::svi_disk_size(bytes))
+    }
+
+    pub fn svi_disk_size(bytes: u64) -> bool {
+        matches!(bytes, 172_032 | 346_112)
+    }
+
+    pub fn accepts_fs_file(&self, path: &Path) -> Result<bool> {
+        if !self.accepts(path) {
+            return Ok(false);
+        }
+        if self.is_svi_disk(path) {
+            let size = match std::fs::metadata(path) {
+                Ok(metadata) => metadata.len(),
+                // Match the browser's existing handling of dangling links and
+                // entries removed between the directory read and this check.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(DegaussError::io("SV-328 disk size", path, error)),
+            };
+            return Ok(Self::svi_disk_size(size));
+        }
+        Ok(true)
     }
 
     /// The launch rule covering a file, if the config declares one.

@@ -163,6 +163,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_an_explicit_null_clears_a_game_version() {
+        let mut request = serde_json::json!({
+            "action":"game-core-version","revision":"1","system":"NES","game":"game-id"
+        });
+        assert!(serde_json::from_value::<api::Command>(request.clone()).is_err());
+        request["version"] = serde_json::Value::Null;
+        assert!(matches!(
+            serde_json::from_value(request),
+            Ok(api::Command::GameCoreVersion { version: None, .. })
+        ));
+    }
+
+    #[test]
     fn old_settings_default_to_no_listener_and_urls_match_protocol_and_port() {
         let config: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(config.mode, Mode::Off);
