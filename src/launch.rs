@@ -731,6 +731,20 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
 /// slot to its ROM-set loader. In every other system a file without a
 /// rule is refused rather than guessed at.
 fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule> {
+    if crate::systems::undated_core_stem(&system.rbf).eq_ignore_ascii_case("_Computer/MacIIci")
+        && game
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("img"))
+    {
+        let slot = if mac_iici_floppy_image(game)? { 0 } else { 2 };
+        return system
+            .launch
+            .iter()
+            .find(|r| r.index == slot && r.extensions.iter().any(|e| e.eq_ignore_ascii_case("img")))
+            .ok_or_else(|| {
+                DegaussError::unsupported("Mac IIci image", format!("no .img rule for slot {slot}"))
+            });
+    }
     system
         .rule_for(game)
         .or_else(|| crate::neogeo::romset_rule(system))
@@ -744,6 +758,162 @@ fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule>
                 ),
             )
         })
+}
+
+fn msx1_extra_family(
+    system: &SystemConfig,
+    game: &Path,
+    root: &Path,
+    choice: Option<&str>,
+    version: Option<&str>,
+    ra: bool,
+) -> Result<Option<SystemConfig>> {
+    if !crate::systems::undated_core_stem(&system.rbf).eq_ignore_ascii_case("_Computer/MSX1")
+        || !game
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("cas") || e.eq_ignore_ascii_case("vhd"))
+        || system.rule_for(game).is_some()
+        || !system
+            .compatible_cores
+            .iter()
+            .any(|p| p.id == "unified-msx")
+    {
+        return Ok(None);
+    }
+    if choice.is_some_and(|c| c != "unified-msx") {
+        return Err(DegaussError::unsupported(
+            "MSX1 media",
+            "This format needs the unified MSX profile.",
+        ));
+    }
+    let family =
+        crate::launch_cores::resolve_for_version(system, root, Some("unified-msx"), version, ra)?;
+    if family.rule_for(game).is_none() {
+        return Err(DegaussError::unsupported(
+            "MSX1 media",
+            "No unified profile rule for this format.",
+        ));
+    }
+    Ok(Some(family))
+}
+
+fn mac_iici_floppy_image(path: &Path) -> Result<bool> {
+    use std::io::Read;
+    // se30_flp_loader supports four raw sizes and an 84-byte DiskCopy 4.2
+    // header. Plain hard-disk images may share the .img extension.
+    const RAW: [u64; 4] = [409600, 819200, 737280, 1474560];
+    let mut h = [0u8; 84];
+    let size = if let Some((archive, _)) = crate::zip::split_member_path(path) {
+        let entry = crate::zip::validate_member_for_launch(path)?;
+        // A partitioned hard disk can have exactly the size of a raw floppy.
+        // Read the same small header as an unpacked file, never extract the disk.
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("unzip")
+            .arg("-p")
+            .arg(&archive)
+            .arg(crate::misterzine::literal_unzip_member_pattern(&entry.name))
+            .env_remove("UNZIP")
+            .env_remove("UNZIPOPT")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| DegaussError::io("opening zipped Mac IIci header", path, e))?;
+        let read = child
+            .stdout
+            .take()
+            .expect("piped stdout")
+            .read_exact(&mut h);
+        let _ = child.kill();
+        child
+            .wait()
+            .map_err(|e| DegaussError::io("closing zipped Mac IIci header", path, e))?;
+        read.map_err(|e| DegaussError::io("reading zipped Mac IIci header", path, e))?;
+        entry.size
+    } else {
+        let mut f = std::fs::File::open(path)
+            .map_err(|e| DegaussError::io("opening Mac IIci image", path, e))?;
+        let size = f
+            .metadata()
+            .map_err(|e| DegaussError::io("reading Mac IIci image size", path, e))?
+            .len();
+        if size >= 84 {
+            f.read_exact(&mut h)
+                .map_err(|e| DegaussError::io("reading Mac IIci image header", path, e))?;
+        }
+        size
+    };
+    if size < 84 {
+        return Err(DegaussError::unsupported(
+            "Mac IIci image",
+            "too short for a floppy or hard disk",
+        ));
+    }
+    if h.starts_with(b"ER") {
+        return Ok(false);
+    }
+    if (1..=63).contains(&h[0]) && h[82..84] == [1, 0] {
+        let data = u32::from_be_bytes(h[64..68].try_into().unwrap()) as u64;
+        return Ok(matches!(
+            (data, h[80]),
+            (409600 | 819200, 0 | 1) | (737280 | 1474560, 2 | 3)
+        ) && size >= 84 + data);
+    }
+    Ok(RAW.contains(&size))
+}
+
+/// MiSTer Main reads status from the setname's CFG, while same_dir keeps
+/// the FM-7 ROM directory. Do not write the FM-7/FM77AV configuration.
+fn fm8_profile_file(root: &Path) -> Result<Option<(PathBuf, Vec<u8>)>> {
+    let dest = root.join("config/DegaussFM8_v4.CFG");
+    let original = root.join("config/FM-7_v4.CFG");
+    let mut bytes = match std::fs::read(&dest) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::read(&original) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![0; 16],
+            Err(e) => return Err(DegaussError::io("reading base FM-7 profile", &original, e)),
+        },
+        Err(e) => return Err(DegaussError::io("reading FM-8 profile", &dest, e)),
+    };
+    if bytes.len() != 16 {
+        return Err(DegaussError::unsupported(
+            "FM-8 machine profile",
+            "unrecognised status file; existing settings were not changed",
+        ));
+    }
+    if bytes[2] & 0x80 == 0 && bytes[3] & 1 != 0 && dest.is_file() {
+        return Ok(None);
+    }
+    bytes[2] &= 0x7f;
+    bytes[3] |= 1;
+    Ok(Some((dest, bytes)))
+}
+
+fn uses_fm8_profile(family: &SystemConfig) -> bool {
+    family.setname.as_deref() == Some("DegaussFM8")
+        && crate::systems::undated_core_stem(&family.rbf).eq_ignore_ascii_case("_Computer/FM-7")
+}
+
+/// A native favourite must work from stock MiSTer even before Degauss has
+/// launched the FM-8 once. The MGL itself cannot select the machine's switches.
+pub fn save_library_favorite(
+    menu_root: &Path,
+    system: &SystemConfig,
+    folder: &Path,
+    name: &str,
+    mgl: &str,
+) -> Result<PathBuf> {
+    if crate::systems::undated_core_stem(&system.rbf).eq_ignore_ascii_case("_Computer/FM-7")
+        && mgl.contains("<setname same_dir=\"1\">DegaussFM8</setname>")
+        && !folder.join(format!("{name}.mgl")).exists()
+    {
+        if let Some((path, status)) = fm8_profile_file(menu_root)? {
+            crate::scraper::atomic_write(&path, &status, "FM-8 machine profile")
+                .map_err(|e| DegaussError::unsupported("saving FM-8 machine profile", e.detail))?;
+        }
+    }
+    crate::favorites::add_game(folder, name, mgl)
 }
 
 /// Re-check stale game references at launch; ordinary media require no extra I/O.
@@ -1038,6 +1208,24 @@ pub fn plan_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
+    if let Some(family) = msx1_extra_family(
+        system,
+        game,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )? {
+        return plan_with_selections(
+            &family,
+            game,
+            mgl_path,
+            menu_root,
+            ra_first,
+            selected_version,
+            None,
+        );
+    }
     if let Some(launcher) = amiga_vision_cd32_mgl(system, game, menu_root)? {
         return plan_self_describing(system, &launcher, mgl_path, menu_root);
     }
@@ -1130,7 +1318,11 @@ pub fn plan_with_selections(
             && !crate::favorites::has_home_relative_paths(game)?
             && source_family.launch == family.launch
         {
-            return plan_self_describing(system, game, mgl_path, menu_root);
+            let mut result = plan_self_describing(system, game, mgl_path, menu_root)?;
+            if uses_fm8_profile(&family) {
+                result.boot_file = fm8_profile_file(menu_root)?;
+            }
+            return Ok(result);
         }
         let text = if source_family.launch == family.launch {
             crate::core_variants::convert_favorite(game, &core)?
@@ -1144,7 +1336,11 @@ pub fn plan_with_selections(
             mgl,
             mgl_path: mgl_path.to_path_buf(),
             command: format!("load_core {}\n", mgl_path.display()),
-            boot_file: None,
+            boot_file: if uses_fm8_profile(&family) {
+                fm8_profile_file(menu_root)?
+            } else {
+                None
+            },
         });
     }
     if !needs_system_core(game) {
@@ -1165,6 +1361,9 @@ pub fn plan_with_selections(
     let mut result = plan(&family, game, mgl_path)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
+    if uses_fm8_profile(&family) {
+        result.boot_file = fm8_profile_file(menu_root)?;
+    }
     Ok(result)
 }
 
@@ -1187,6 +1386,23 @@ pub fn favorite_mgl_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<Option<String>> {
+    if let Some(family) = msx1_extra_family(
+        system,
+        game,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )? {
+        return favorite_mgl_with_selections(
+            &family,
+            game,
+            menu_root,
+            ra_first,
+            selected_version,
+            None,
+        );
+    }
     let Some(text) = favorite_mgl(system, game)? else {
         return Ok(None);
     };
@@ -1374,6 +1590,225 @@ pub fn publish_active_game(game: Option<&Path>, target: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_computer_launches_preserve_private_fm8_status_and_correct_media_slots() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-computer-130-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        for name in [
+            "Laser500_20261123",
+            "MacIIci_20261125",
+            "FM-7_20261123",
+            "PC8001_20261118",
+            "VG5000_20261121",
+            "Pasopia7_20261120",
+            "MSX_20260603",
+            "MSX_20261118",
+            "SunSparcStation20_55mhz_20261114",
+            "SunSparcStation20_60mhz_20261119",
+        ] {
+            std::fs::write(root.join(format!("_Computer/{name}.rbf")), b"core").unwrap();
+        }
+        let cfg = [0xa4u8; 16];
+        std::fs::write(root.join("config/FM-7_v4.CFG"), cfg).unwrap();
+        let mgl = root.join("launch.mgl");
+        for (id, formats) in [
+            (
+                "LASER500",
+                &[
+                    ("bin", "f", 1),
+                    ("prg", "f", 1),
+                    ("nic", "s", 0),
+                    ("dsk", "s", 0),
+                    ("cas", "s", 2),
+                    ("wav", "s", 2),
+                ][..],
+            ),
+            (
+                "MACIICI",
+                &[
+                    ("dsk", "s", 0),
+                    ("vhd", "s", 2),
+                    ("toast", "s", 4),
+                    ("iso", "s", 4),
+                ][..],
+            ),
+            ("VG5000", &[("k7", "f", 1), ("wav", "f", 1)][..]),
+            (
+                "Pasopia7",
+                &[
+                    ("d88", "s", 0),
+                    ("bin", "s", 3),
+                    ("cas", "s", 2),
+                    ("wav", "s", 2),
+                ][..],
+            ),
+            ("PC8001", &[("cas", "f", 1)][..]),
+            (
+                "MSX",
+                &[
+                    ("vhd", "s", 0),
+                    ("rom", "f", 3),
+                    ("cas", "f", 5),
+                    ("dsk", "s", 1),
+                ][..],
+            ),
+            (
+                "MSX1",
+                &[
+                    ("vhd", "s", 0),
+                    ("rom", "f", 3),
+                    ("cas", "f", 5),
+                    ("dsk", "s", 1),
+                ][..],
+            ),
+            ("SunSparcStation", &[("iso", "s", 2), ("vhd", "s", 0)][..]),
+        ] {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            assert!(
+                !system.accepts(&games.join("boot.rom"))
+                    || id == "MSX"
+                    || id == "MSX1"
+                    || id == "PC8001"
+            );
+            for &(ext, kind, index) in formats {
+                let path = games.join(format!("Disk.{ext}"));
+                std::fs::write(&path, b"media").unwrap();
+                assert!(system.accepts(&path), "{id} .{ext}");
+                let plan =
+                    plan_with_selections(&system, &path, &mgl, &root, false, None, None).unwrap();
+                let doc = roxmltree::Document::parse(&plan.mgl).unwrap();
+                let slot = doc.descendants().find(|n| n.has_tag_name("file")).unwrap();
+                assert_eq!(
+                    (slot.attribute("type"), slot.attribute("index")),
+                    (Some(kind), Some(index.to_string().as_str())),
+                    "{id} .{ext}"
+                );
+            }
+        }
+        let oldmsx = shipped_system("MSX", vec![root.join("games/MSX")]);
+        let legacy = root.join("legacy-card");
+        std::fs::create_dir_all(legacy.join("_Computer")).unwrap();
+        std::fs::write(legacy.join("_Computer/MSX_20260603.rbf"), b"core").unwrap();
+        let old = plan_with_selections(
+            &oldmsx,
+            &root.join("games/MSX/Disk.vhd"),
+            &mgl,
+            &legacy,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(old.mgl.contains("index=\"1\"") && old.mgl.contains("MSX_20260603"));
+        assert!(plan_with_selections(
+            &oldmsx,
+            &root.join("games/MSX/Disk.cas"),
+            &mgl,
+            &legacy,
+            false,
+            None,
+            None
+        )
+        .is_err());
+        let fm = shipped_system("FM-7", vec![root.join("games/FM-7")]);
+        std::fs::create_dir_all(root.join("games/FM-7")).unwrap();
+        let tape = root.join("games/FM-7/Cassette.t77");
+        std::fs::write(&tape, b"cassette").unwrap();
+        let fm8 = plan_with_selections(&fm, &tape, &mgl, &root, false, None, Some("fm8")).unwrap();
+        assert!(fm8.mgl.contains("DegaussFM8") && fm8.mgl.contains("same_dir=\"1\""));
+        let (dest, status) = fm8.boot_file.unwrap();
+        assert_eq!(dest, root.join("config/DegaussFM8_v4.CFG"));
+        let mut expected = cfg;
+        expected[2] &= 0x7f;
+        expected[3] |= 1;
+        assert_eq!(status, expected);
+        assert_eq!(std::fs::read(root.join("config/FM-7_v4.CFG")).unwrap(), cfg);
+        let saved = favorite_mgl_with_selections(&fm, &tape, &root, false, None, Some("fm8"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            !dest.exists(),
+            "planning alone must not write a machine profile"
+        );
+        let favorite =
+            save_library_favorite(&root, &fm, &root.join("_@Favorites"), "FM8 tape", &saved)
+                .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), expected);
+        assert_eq!(std::fs::read_to_string(&favorite).unwrap(), saved);
+        assert_eq!(std::fs::read(root.join("config/FM-7_v4.CFG")).unwrap(), cfg);
+        assert!(
+            plan_with_selections(&fm, &tape, &mgl, &root, false, None, Some("fm8"))
+                .unwrap()
+                .boot_file
+                .is_none()
+        );
+        assert!(
+            plan_with_selections(&fm, &tape, &mgl, &root, false, None, None)
+                .unwrap()
+                .boot_file
+                .is_none()
+        );
+        let pas = shipped_system("Pasopia7", vec![root.join("games/Pasopia7")]);
+        assert!(!pas.accepts(Path::new("RAMPAC_blank.bin")));
+        let laser = shipped_system("LASER500", vec![root.join("games/LASER500")]);
+        assert!(laser.accepts(Path::new("RAMPAC_blank.bin")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn mac_iici_img_role_uses_native_floppy_geometry_and_scsi_signature() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("degauss-iici-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sys = shipped_system("MACIICI", vec![dir.clone()]);
+        let file = dir.join("Disk.img");
+        let set = |len: u64, header: &[u8]| {
+            let mut f = std::fs::File::create(&file).unwrap();
+            f.write_all(header).unwrap();
+            f.set_len(len).unwrap();
+        };
+        for n in [409600, 819200, 737280, 1474560] {
+            set(n, &[]);
+            assert_eq!(rule_for(&sys, &file).unwrap().index, 0);
+        }
+        let mut dc = [0u8; 84];
+        dc[0] = 4;
+        dc[64..68].copy_from_slice(&819200u32.to_be_bytes());
+        dc[80] = 1;
+        dc[82] = 1;
+        set(84 + 819200 + 19200, &dc);
+        assert_eq!(rule_for(&sys, &file).unwrap().index, 0);
+        set(819200, b"ER");
+        assert_eq!(
+            rule_for(&sys, &file).unwrap().index,
+            2,
+            "An Apple hard disk must not be mounted as a floppy"
+        );
+        // An archive can contain both kinds of IMG, even with identical
+        // uncompressed sizes. The selected member, not a wildcard or size,
+        // determines the actual drive.
+        let archive = dir.join("Media.zip");
+        let built=std::process::Command::new("python3").args(["-c",
+            "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.writestr('Disk [A].img',b'ER'+bytes(819198)); z.writestr('Disk A.img',bytes(819200)); z.close()"])
+            .arg(&archive).status().unwrap();
+        assert!(built.success());
+        assert_eq!(
+            rule_for(&sys, &archive.join("Disk [A].img")).unwrap().index,
+            2
+        );
+        assert_eq!(
+            rule_for(&sys, &archive.join("Disk A.img")).unwrap().index,
+            0
+        );
+        set(12 * 1024 * 1024, b"ER");
+        assert_eq!(rule_for(&sys, &file).unwrap().index, 2);
+        set(2, b"ER");
+        assert!(rule_for(&sys, &file).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn pcjr_core_selection_updates_favourite_slots_without_rewriting_saved_files() {
         let root =

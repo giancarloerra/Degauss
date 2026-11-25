@@ -137,6 +137,12 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// For external discovery only: the original indexed title, never the
+    /// display suffix or internal key (both can include storage paths).
+    pub(crate) fn guide_title(&self) -> &str {
+        &self.original_name
+    }
+
     pub fn key(&self) -> String {
         match &self.row.kind {
             Kind::Up => format!("{}\0up:", self.system),

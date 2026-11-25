@@ -239,7 +239,7 @@ impl App {
                     ));
                 }
                 if let Some(mgl) = mgl {
-                    crate::favorites::add_game(&folder, stem, &mgl).map_err(web_error)?;
+                    crate::launch::save_library_favorite(root, &config, &folder, stem, &mgl).map_err(web_error)?;
                 } else if let Some(core) = core {
                     if needs_native_arcade_core_link(Some(found), &core) {
                         crate::favorites::ensure_arcade_cores_link(root).map_err(web_error)?;

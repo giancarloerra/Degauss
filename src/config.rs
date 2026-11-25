@@ -307,6 +307,15 @@ impl SystemConfig {
             return false;
         };
         let ext = ext.to_ascii_lowercase();
+        if ext == "bin"
+            && crate::systems::undated_core_stem(&self.rbf)
+                .eq_ignore_ascii_case("_Computer/Pasopia7")
+            && path
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("RAMPAC_blank.bin"))
+        {
+            return false;
+        }
         if ext == "cas"
             && path
                 .file_name()
@@ -556,23 +565,7 @@ impl Config {
         };
         let merged = Self::with_overrides(&text, &user_text, &user_path).and_then(|config| {
             if let Some(table) = table {
-                if !config.core_overrides.is_empty() || !config.library_folders.is_empty() {
-                    let table = crate::systems::with_core_overrides(
-                        table,
-                        &config.core_overrides,
-                        &user_path,
-                    )?;
-                    if !config.library_folders.is_empty() {
-                        let table =
-                            crate::systems::prepare_table(table, Path::new(&config.menu_root))?;
-                        crate::systems::with_library_folders(
-                            &table,
-                            &config.library_folders,
-                            Path::new(&config.menu_root),
-                            &user_path,
-                        )?;
-                    }
-                }
+                config.validate_catalogue_overrides(table, &user_path)?;
             }
             Ok(config)
         });
@@ -586,6 +579,22 @@ impl Config {
                 Ok(base)
             }
         }
+    }
+
+    pub(crate) fn validate_catalogue_overrides(
+        &self,
+        table: &[crate::systems::SystemDef],
+        origin: &Path,
+    ) -> Result<()> {
+        if !self.core_overrides.is_empty() || !self.library_folders.is_empty() {
+            let table = crate::systems::with_core_overrides(table, &self.core_overrides, origin)?;
+            if !self.library_folders.is_empty() {
+                let root = Path::new(&self.menu_root);
+                let table = crate::systems::prepare_table(table, root)?;
+                crate::systems::with_library_folders(&table, &self.library_folders, root, origin)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn with_overrides(base: &str, overrides: &str, origin: &Path) -> Result<Self> {
@@ -626,6 +635,12 @@ impl Config {
                 },
             )
         })?;
+        let mut overrides: toml::Value = overrides;
+        // Owned by the prompt editor, not a global setting. A bad prompt
+        // should be reported when opened without disabling library overrides.
+        if let Some(t) = overrides.as_table_mut() {
+            t.remove("ai_prompts");
+        }
         merge(&mut value, overrides);
         let config: Self = value
             .try_into()

@@ -187,7 +187,7 @@ const VIDEO_BRAIN: (&str, &str) = ("VideoBrain", "VideoBrain_DualSDRAM");
 /// Resolve these undated families before checking their media build dates.
 /// An explicitly dated reference stays fixed.
 pub(crate) fn undated_media_core(stem: &str) -> bool {
-    ["Svi328", "Laser310", "Lynx48"]
+    ["Svi328", "Laser310", "Lynx48", "PC8001", "MSX"]
         .iter()
         .any(|name| stem.eq_ignore_ascii_case(name))
         || ACORN_MEDIA_CORES
@@ -458,6 +458,14 @@ fn core_file_slot_patches(
                 // Undated custom builds retain the original direct-load profile.
                 ("f", "2", "1", &["mzf"])
             }
+        } else if same_core_identity(stem, "MSX")
+            || crate::core_choices::nightly_matches(stem, "_Computer/MSX")
+        {
+            if crate::core_choices::nightly_meets_minimum(stem, Some("20261118")) {
+                ("s", "1", "0", &["vhd"])
+            } else {
+                ("s", "0", "1", &["vhd"])
+            }
         } else if acorn_media_family(stem) == Some("AcornAtom") {
             ("s", "1", "0", &["vhd"])
         } else {
@@ -676,9 +684,12 @@ pub(crate) fn check_computer_media_launcher(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    if !["Svi328", "Laser310", "Lynx48"].iter().any(|name| {
-        same_core_identity(stem, name) || crate::core_choices::nightly_matches(stem, name)
-    }) {
+    if !["Svi328", "Laser310", "Lynx48", "PC8001", "MSX"]
+        .iter()
+        .any(|name| {
+            same_core_identity(stem, name) || crate::core_choices::nightly_matches(stem, name)
+        })
+    {
         return Ok(());
     }
     let resolved = crate::core_choices::standard_reference_after(reference, root, None)?
@@ -709,6 +720,10 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
         ("SV-328", &[("20261117", &["dsk"])])
     } else if matches("Laser310") {
         ("Laser 310", &[("20261118", &["dsk", "cas", "wav"])])
+    } else if matches("PC8001") {
+        ("PC-8001", &[("20261118", &["cas"])])
+    } else if matches("MSX") {
+        ("unified MSX", &[("20261118", &["dsk", "rom", "cas"])])
     } else if matches("Lynx48") {
         ("Camputers Lynx", &[("20261118", &["ldf", "tzx", "wav"])])
     } else if matches(SHARP_MZ_2500.0) || matches(SHARP_MZ_2500.1) {

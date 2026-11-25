@@ -343,6 +343,7 @@ async function openHomeItem(item) {
   if (dest.page === 'category') {
     const special = { 'Explore Games': 'explore', 'Last Played': 'history', 'Core Updates': 'updates', 'Cores': 'cores', 'Scripts': 'scripts' };
     if (dest.category === 'Attract Mode') return command('attract');
+    if (dest.category === 'Explore with AI') return go('ai-guides');
     return go(special[dest.category] || 'library', { category: dest.category });
   }
   go(dest.page, dest);
@@ -524,11 +525,12 @@ async function renderRoute() {
   try {
     const route = currentRoute(); state.route = route; $('navigation').classList.remove('open'); $('nav-toggle').setAttribute('aria-expanded', 'false');
     $('web-view-control').hidden = !['home','library','browse','explore','collections','history','updates','cores','scripts'].includes(route.page) || Boolean(route.edit);
-    const name = pageNames[route.page] || 'Page';
+    const name = route.page === 'ai-guides' ? 'Explore with AI' : pageNames[route.page] || 'Page';
     header(name); breadcrumbs(route.page === 'home' ? [] : [{ name, page: route.page }]);
     $('page-loading').textContent = 'Loading ' + name + '…'; $('page-loading').hidden = false; $('page').setAttribute('aria-busy', 'true');
     document.querySelectorAll('nav a').forEach(a => { if (a.hash.slice(1) === route.page) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     const pages = { home: () => homePage(route, epoch), library: () => libraryPage(route, epoch), browse: () => browsePage(route, epoch), explore: () => explorePage(route, epoch), collections: () => collectionsPage(epoch), layouts: () => layoutsPage(epoch), themes: () => themesPage(epoch), settings: () => settingsPage(epoch), remote: remotePage, cores: () => coresPage(route, epoch), updates: () => updatesPage(route, epoch), scripts: () => scriptsPage(route, epoch), history: () => historyPage(epoch) };
+    if (route.page === 'ai-guides') return await aiGuidesPage(route, epoch);
     if (!pages[route.page]) throw new Error('Unknown page. Choose a page from the navigation.');
     await pages[route.page]();
   } catch (error) { if (epoch === state.epoch) showError(error); }
@@ -910,8 +912,76 @@ async function settingsPage(epoch) {
   }
   $('page').append(el('div', { class: 'actions' }, button('Scraper settings', scraperSettings), button('Saved controllers', controllersEditor), button('Rebuild library', async () => { await operation('rebuild', { system: null }); await renderRoute(); }), button('Reset view selections', async () => { await edit('reset', { kind: 'view-selections' }); await renderRoute(); }), button('Unhide entries', async () => { await edit('reset', { kind: 'hidden' }); await renderRoute(); })));
 }
+async function aiGuidesPage(route, epoch) {
+  const data = await command('ai-guides');
+  if (epoch !== state.epoch) return;
+  state.revision = data.revision;
+  const page = $('page');
+  const action = async (name, args = {}) => { await command(name, args); closeModal(); await renderRoute(); };
+  if (route.setup || !data.enabled) {
+    const provider = select([['OpenAi','OpenAI'],['Claude','Claude']], data.provider);
+    const enabled = select([['off','Off'],['on','On']], data.enabled ? 'on' : 'off');
+    header('Explore with AI / Setup');
+    page.append(field('Show on Home', enabled), field('Provider', provider),
+      button('Save settings', () => action('ai-setup', { revision: data.revision, enabled: enabled.value === 'on', provider: provider.value })),
+      notice(data.configured ? 'A key is set for the selected provider.' : 'No key set for the selected provider.'));
+    if (location.protocol === 'https:') {
+      page.append(button('Set API key', () => {
+        const secret = input('', 'password'); secret.autocomplete = 'new-password'; secret.required = true;
+        const consent = input('', 'checkbox'); consent.required = true;
+        const chosenProvider = provider.value;
+        formModal('Set '+(chosenProvider === 'OpenAi' ? 'OpenAI' : 'Claude')+' API key', [field('Provider API key', secret),field('Save on the MiSTer card. Anyone who can read the card can read the key.', consent)], async () => {
+          const key = secret.value; secret.value = '';
+          await action('ai-key', { revision: data.revision, provider: chosenProvider, key, accept_card_storage: consent.checked });
+        });
+      }), button('Clear saved key', () => {
+        const selected = provider.value;
+        return modal('Clear the '+(selected === 'OpenAi' ? 'OpenAI' : 'Claude')+' key?', button('Clear key', () => action('ai-key', {revision:data.revision,provider:selected,key:'',accept_card_storage:false})));
+      }));
+    } else page.append(notice('Open Web Access over HTTPS, or enter the key on MiSTer.'));
+    if (data.enabled) page.append(button('Open guides', () => go('ai-guides')));
+    return;
+  }
+  header('Explore with AI', button('Settings', () => go('ai-guides', { setup:true })));
+  if (data.busy) {
+    page.append(notice(data.progress || 'Reading library…'), button('Cancel', () => action('ai-cancel')));
+    setTimeout(() => { if (epoch === state.epoch && !$('editor').open) renderRoute(); }, 2000);
+    return;
+  }
+  if (data.confirm) {
+    page.append(notice(data.confirm), button('Read whole catalogue', () => action('ai-confirm'), true),button('Back', () => action('ai-cancel'))); return;
+  }
+  if (data.error) page.append(notice(data.error));
+  const scope = select([['search','Search library'],['whole','Read whole catalogue']], 'search');
+  const generate = question => action('ai-generate', { question, whole: scope.value === 'whole' });
+  page.append(field('Guide scope',scope),button('I’m Feeling Lucky', () => generate('Surprise me with an original story connecting games on this machine.'),true));
+  const prompts = el('div',{class:'actions'});
+  for (const [name,question] of data.builtins) prompts.append(button(name, () => generate(question)));
+  const editor = (oldName = '',previous = null) => {
+    const name = input(oldName); name.required = true; name.maxLength = 64; name.readOnly = previous !== null;
+    const question = el('textarea', {required:true,maxlength:2000}); question.value = previous || '';
+    formModal(previous === null ? 'New prompt' : 'Edit prompt',[field('Name',name),field('Prompt',question)],() => action('ai-prompt',{ name:name.value,previous,text:question.value }));
+  };
+  for (const [name,question] of data.prompts) {
+    prompts.append(el('div',{class:'actions'},button(name, () => generate(question)),button('Edit', () => editor(name,question)),
+      button('Delete', () => modal('Delete '+name+'?',button('Delete prompt', () => action('ai-prompt',{name,previous:question,text:null}))))));
+  }
+  page.append(prompts,button('New custom prompt', () => editor()));
+  if (data.guide) {
+    page.append(el('h2',{},data.guide.title),el('p',{},data.guide.intro));
+    for (const game of data.guide.games) page.append(el('article',{class:'row'},image(game.art),el('div',{},el('h3',{},game.name),el('small',{},game.system),el('p',{},game.note),button('Launch',()=>launch(game.id)))));
+  }
+}
+async function checkCatalogue() {
+    let data = await command('catalogue-check');
+    const paint = () => modal('System catalogue',notice(data.status), ...(data.busy ? [button('Cancel', async () => { await command('catalogue-cancel'); closeModal(); })] :
+      [data.revision ? button('Install', async () => { data = await command('catalogue-install',{revision:data.revision}); await follow(); }, true) : null,
+       ...(data.changed || []).map(system => button('Rebuild '+system, async () => { closeModal(); await operation('rebuild',{system}); }))]));
+    const follow = async () => { paint(); while (data.busy && $('editor').open) {await new Promise(resolve => setTimeout(resolve,1000)); if (!$('editor').open) return; data = await command('catalogue-status'); paint();} };
+    await follow();
+}
 function optionEditor(id) {
-  return ({ CustomViews: () => go('layouts'), Theme: () => go('themes'), Controllers: controllersEditor, ScraperSettings: scraperSettings, RebuildCache: () => operation('rebuild', { system: null }), ScrapeAll: () => scrapeConfirm(null, 'all systems'), ResetCustomViews: async () => { await edit('reset', { kind: 'view-selections' }); await renderRoute(); }, ResetHidden: async () => { await edit('reset', { kind: 'hidden' }); await renderRoute(); }, SwitchIni: iniProfiles, Advanced: () => document.querySelector('details[data-key=advanced]')?.setAttribute('open', ''), WebMode: webSettings, WebPort: webSettings, WebPassword: webSettings, WebAddress: webSettings, WebCertificate: webSettings })[id];
+  return ({ AiGuides: () => go('ai-guides', { setup: true }), CatalogueUpdate: checkCatalogue, CustomViews: () => go('layouts'), Theme: () => go('themes'), Controllers: controllersEditor, ScraperSettings: scraperSettings, RebuildCache: () => operation('rebuild', { system: null }), ScrapeAll: () => scrapeConfirm(null, 'all systems'), ResetCustomViews: async () => { await edit('reset', { kind: 'view-selections' }); await renderRoute(); }, ResetHidden: async () => { await edit('reset', { kind: 'hidden' }); await renderRoute(); }, SwitchIni: iniProfiles, Advanced: () => document.querySelector('details[data-key=advanced]')?.setAttribute('open', ''), WebMode: webSettings, WebPort: webSettings, WebPassword: webSettings, WebAddress: webSettings, WebCertificate: webSettings })[id];
 }
 
 async function iniProfiles() {

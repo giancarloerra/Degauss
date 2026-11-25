@@ -181,6 +181,8 @@ current revision from their editor's read response. Commands reject unknown fiel
 | Area | Commands and additional fields |
 | --- | --- |
 | State | `state`, `systems`, `options` |
+| Explore with AI | `ai-guides` (status, prompts and last guide); `ai-setup` (`revision`, `enabled`, `provider`); `ai-key` (`revision`, `provider`, `key`, `accept_card_storage`, **HTTPS only**); `ai-prompt` (`name`, `previous?`, `text?`); `ai-generate` (`question`, `whole?`); `ai-confirm`; `ai-cancel` |
+| System catalogue | `catalogue-status` (local state only); `catalogue-check` (explicit GitHub request); `catalogue-install` (`revision`, the number offered by Check); `catalogue-cancel` |
 | Connection | `web-settings`; `web-settings-save` (`revision`, `config`, `password?`); `web-certificate-renew` |
 | Library | `browse` (`system`, `folder?`, `offset?`, `limit?`, `search?`, `filters?`); `game` (`id`); `history` |
 | Explore | `explore` (`query`, `offset?`, `limit?`); `random` (`query?`, `folder?`, `favorites_only?`) |
@@ -202,6 +204,15 @@ current revision from their editor's read response. Commands reject unknown fiel
 | Work | `rebuild` (`system?`); `job` (`id`); `cancel` (`id`) |
 
 ### Native data contracts
+
+- **AI guides:** Provider values are `OpenAi` and `Claude`. Read `ai-guides` for
+  `configured` (a boolean, never the key), `busy`, `confirm`, `error`, and
+  `guide`. A whole-catalogue request stops at `confirm` before contacting the
+  selected provider; send `ai-confirm` only after user approval. Game IDs and art
+  URLs belong to this frontend session. `ai-prompt` with null `previous` creates
+  a prompt; send its existing text to edit it, or null `text` to delete it.
+  Use `ai-key` with an empty key to clear a saved credential. Kiosk locking
+  prevents generating paid guides and changing the configuration.
 
 - **Per-game core choices:** On opening a game's Actions, request
   `core-choices` with its registered system and game IDs. Show the family

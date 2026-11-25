@@ -120,6 +120,7 @@ fn built_in(system: &str) -> Option<u32> {
         "TurboGrafx16CD" => 114,
         "VC4000" => 281,
         "Vectrex" => 102,
+        "VG5000" => 261,
         "VirtualBoy" => 11,
         "CreatiVision" => 241,
         "WonderSwan" => 45,
@@ -153,6 +154,7 @@ mod tests {
         assert_eq!(id_for("Lynx48", &none), Some(88));
         assert_eq!(id_for("AliceMC10", &none), Some(311));
         assert_eq!(id_for("ColecoAdam", &none), Some(89));
+        assert_eq!(id_for("VG5000", &none), Some(261));
         for (system, id) in [
             ("CoCo3", 144),
             ("EG2000", 92),
@@ -244,6 +246,8 @@ mod tests {
             "IQ151",
             "JR100",
             "Laser",
+            "LASER500",
+            "MACIICI",
             "MACIICX",
             "MACSE30",
             "MTX512",
@@ -260,6 +264,7 @@ mod tests {
             "PCXT",
             "PCjr",
             "PDP1",
+            "Pasopia7",
             "PMD85",
             "PocketStation",
             "QL",

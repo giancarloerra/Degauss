@@ -37,7 +37,7 @@ const CANCEL_HOME: &str = "Cancel Changes";
 
 impl App {
     fn kiosk_category_allowed(&self, name: &str) -> bool {
-        !matches!(name, SCRIPTS_CATEGORY | CORES_CATEGORY | MISTERZINE_CATEGORY | "Other" | "Utility")
+        !matches!(name, SCRIPTS_CATEGORY | CORES_CATEGORY | MISTERZINE_CATEGORY | guides::NAME | "Other" | "Utility")
     }
 
     fn kiosk_target_allowed(&self, target: &crate::home::Target) -> bool {
@@ -787,6 +787,7 @@ impl App {
             if !self.settings.show_explore.unwrap_or(false) {
                 store.hidden.insert(crate::home::category_key(crate::explore::NAME));
             }
+            if !self.settings.ai_enabled.unwrap_or(false) {store.hidden.insert(crate::home::category_key(crate::ai_guides::NAME));}
             self.home.edit = Some(store);
         }
     }
@@ -838,6 +839,7 @@ impl App {
             "Unstable",
             LAST_PLAYED_CATEGORY,
             crate::explore::NAME,
+            crate::ai_guides::NAME,
             FAVORITES_ID,
             CORES_CATEGORY,
             MISTERZINE_CATEGORY,
@@ -984,12 +986,16 @@ impl App {
             };
             let enabled = !store.hidden.contains(&crate::home::category_key(crate::explore::NAME));
             let previous = self.settings.show_explore;
+            let ai_previous=self.settings.ai_enabled;
+            let ai_enabled=!store.hidden.contains(&crate::home::category_key(crate::ai_guides::NAME));
+            if ai_enabled!=ai_previous.unwrap_or(false){self.settings.ai_enabled=Some(ai_enabled);}
             self.settings.show_explore = Some(enabled);
             if !self.save_home_store(store) {
                 self.settings.show_explore = previous;
+                self.settings.ai_enabled=ai_previous;
                 return;
             }
-            visibility_changed = previous.unwrap_or(false) != enabled;
+            visibility_changed = previous.unwrap_or(false) != enabled || ai_previous.unwrap_or(false)!=ai_enabled;
         }
         self.home.edit = None;
         self.home.image = None;

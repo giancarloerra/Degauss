@@ -357,3 +357,33 @@ test('Preview adjustments retain images, and favourite edits use their returned 
   await context.favoriteFolders({ items: [{ id: '', name: 'Root' }] });
   assert.equal(context.dialog[0], 'Favourites folders');
 });
+
+test('guide setup never offers key entry over HTTP; HTTPS saves only the confirmed provider key', async () => {
+  for (const protocol of ['http:', 'https:']) {
+    const controls = new Map(), fields = new Map(), requests = [];
+    let submit;
+    const ctx = vm.createContext({
+      state:{epoch:1}, location:{protocol}, $:()=>({append(){}}), header(){}, notice(){}, closeModal(){}, renderRoute(){},
+      select:(_,initial)=>({value:initial}), field:(label,node)=>(fields.set(label,node),node), input:(_,type)=>({type}),
+      button:(label,fn)=>(controls.set(label,fn),{}),
+      formModal:(_,__,fn)=>{ submit=fn; },
+      command:async(action,args)=>{requests.push({action,args});return {enabled:true,provider:'OpenAi',configured:false,revision:'r'};},
+    });
+    vm.runInContext(section('async function aiGuidesPage(', '\nasync function checkCatalogue('), ctx);
+    await ctx.aiGuidesPage({setup:true},1);
+    assert.equal(controls.has('Set API key'), protocol === 'https:');
+    if (protocol === 'http:') continue;
+    fields.get('Provider').value='Claude';
+    controls.get('Set API key')();
+    const secret=fields.get('Provider API key');
+    assert.equal(secret.type,'password');
+    secret.value='local-unit-value';
+    const consent=[...fields.values()].find(node=>node.type==='checkbox');
+    assert.ok(consent.required);
+    consent.checked=true;
+    await submit();
+    assert.equal(secret.value,'');
+    assert.equal(requests.at(-1).args.provider,'Claude');
+    assert.equal(requests.at(-1).args.accept_card_storage,true);
+  }
+});

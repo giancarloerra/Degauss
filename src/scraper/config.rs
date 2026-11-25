@@ -454,7 +454,7 @@ impl DeveloperCredentials {
     }
 }
 
-pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     atomic_write_with_sequence(path, bytes, what, &SEQUENCE)
 }

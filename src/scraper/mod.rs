@@ -13,6 +13,8 @@ mod platforms;
 mod targets;
 mod upload;
 mod worker;
+pub(crate) use api::CurlTransport;
+pub(crate) use config::atomic_write;
 pub use upload::{install_uploaded_image, validate_uploaded_image, MAX_UPLOAD_BYTES};
 
 pub use config::{

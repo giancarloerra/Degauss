@@ -416,6 +416,7 @@ fn unopened_fixture_app_with_rotation(
         })
         .collect();
     let loaded = Loaded {
+        catalogue_location: None,
         config,
         settings,
         settings_path: root.join("settings.toml"),
@@ -547,6 +548,120 @@ fn run_connection_indicators_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         app.ui.get_ethernet(),
         "bar visibility does not change connection state"
     );
+    app.ui.hide().unwrap();
+}
+
+fn run_guide_setup_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("guide-settings");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for file in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(file), b"fixture").unwrap();
+    }
+    // Finish first-run indexing before driving the settings. During initial
+    // indexing some inputs belong to its progress dialogue, not to Options.
+    let mut app = fixture_app(&root, window, Settings::default());
+    assert_eq!(app.settings.ai_enabled, None);
+    assert!(app.ai.job.is_none() && !root.join(guides::KEY_FILE).exists());
+    select_option(&mut app, OptionsPage::Library, OptionId::AiGuides);
+    app.handle(Action::Accept);
+    assert!(
+        app.ai.page == Some(AiPage::Setup),
+        "library selection {:?}, screen {:?}, message {:?}",
+        app.active_list().selected(),
+        app.screen,
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().ai_enabled,
+        Some(true)
+    );
+    app.handle(Action::Down);
+    app.handle(Action::Accept);
+    assert_eq!(app.ai_provider(), guides::Provider::Claude);
+    assert!(app
+        .ai_start("A guide".into(), false)
+        .unwrap_err()
+        .contains("Claude API key"));
+    assert!(
+        app.ai.job.is_none(),
+        "an unconfigured provider must never receive a request"
+    );
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    let input = "a".repeat(256);
+    app.name_keyboard_draft = input.clone();
+    app.pick_name_key();
+    assert_eq!(
+        app.name_keyboard_draft.len(),
+        257,
+        "provider keys do not inherit the filename limit"
+    );
+    app.refresh();
+    assert_eq!(app.ui.get_find_query().as_str(), "*".repeat(257));
+    app.finish_name_keyboard();
+    app.handle(Action::Quit);
+    assert!(
+        !root.join(guides::KEY_FILE).exists(),
+        "cancelling the card-storage prompt must not store a key"
+    );
+    app.open_name_keyboard(NamePurpose::AiKey, "local-unit-token".into());
+    app.finish_name_keyboard();
+    app.menu_list.select(1);
+    app.handle(Action::Accept);
+    let status = app.web_ai_guides().unwrap();
+    assert_eq!(status["configured"], true);
+    assert!(!status.to_string().contains("local-unit-token"));
+
+    std::fs::write(
+        app.ai_user_file(),
+        "# keep this comment\nwait_for_mounts = []\n",
+    )
+    .unwrap();
+    app.ai_menu(AiPage::Manage);
+    app.handle(Action::Accept);
+    app.name_keyboard_draft = "My guide".into();
+    app.finish_name_keyboard();
+    let long = "A".repeat(299);
+    app.name_keyboard_draft = long;
+    app.pick_name_key();
+    app.finish_name_keyboard();
+    let saved = guides::prompts(&app.ai_user_file()).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].1.len(), 300);
+    assert!(std::fs::read_to_string(app.ai_user_file())
+        .unwrap()
+        .starts_with("# keep this comment\nwait_for_mounts = []\n"));
+
+    let local = guides::LocalGuide {
+        heading: "Saved story".into(),
+        intro: "Introduction.".into(),
+        games: vec![guides::LocalGame {
+            system: "NES".into(),
+            note: "The recommendation.".into(),
+            row: information_row(),
+        }],
+        recent: vec![],
+    };
+    std::fs::create_dir_all(&app.cache_dir).unwrap();
+    std::fs::write(app.ai_guide_file(), serde_json::to_vec(&local).unwrap()).unwrap();
+    app.ai_open(AiPage::Prompts);
+    app.menu_list.select(1);
+    app.handle(Action::Accept);
+    app.handle(Action::Accept);
+    app.refresh();
+    assert_eq!(app.screen, Screen::Information);
+    assert!(app
+        .ui
+        .get_information_text()
+        .contains("The recommendation."));
+    assert!(
+        app.ai.job.is_none(),
+        "Last guide must not start a provider request"
+    );
+    app.handle(Action::Quit);
+    assert!(app.ai.page == Some(AiPage::Guide));
     app.ui.hide().unwrap();
 }
 
@@ -3739,6 +3854,7 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .find(|def| def.id == "NES")
             .unwrap();
         let loaded = Loaded {
+            catalogue_location: None,
             config,
             settings,
             settings_path: root.join("settings.toml"),
@@ -9914,6 +10030,16 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::Screensaver);
     app.refresh();
     assert!(app.ui.get_saver_launchable());
+    assert!(
+        !app.ui.get_saver_cover_only(),
+        "Existing installations keep the title and hint"
+    );
+    app.settings.attract_cover_only = Some(true);
+    app.refresh();
+    assert!(
+        app.ui.get_saver_cover_only() && app.ui.get_saver_launchable(),
+        "Removing the overlay must not disable launch"
+    );
     let first = app.saver_center_picture().unwrap().target.unwrap();
     assert_ne!(first.system_id, "C64", "broken art is not a usable system");
     assert!(app
@@ -12869,6 +12995,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .find(|system| system.id == "NeoGeo")
             .unwrap();
         let loaded = Loaded {
+            catalogue_location: None,
             config,
             settings,
             settings_path: root.join("settings.toml"),
@@ -14562,6 +14689,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_connection_indicators_flow(&root, window.clone());
+    run_guide_setup_flow(&root, window.clone());
     run_title_strip_scrolling_flow(&root, window.clone());
     run_additional_systems_mgl_flow(&root, window.clone());
     run_start_folder_and_game_position_flow(&root, window.clone());

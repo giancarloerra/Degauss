@@ -63,6 +63,7 @@ impl App {
         matches!(
             self.name_keyboard_purpose,
             NamePurpose::WebPassword
+                | NamePurpose::AiKey | NamePurpose::AiPromptName | NamePurpose::AiPromptText
                 | NamePurpose::WebPort
                 | NamePurpose::SaveView
                 | NamePurpose::RenameView(_)

@@ -2101,7 +2101,7 @@ fn extract_single_json(
     Ok(body)
 }
 
-fn literal_unzip_member_pattern(name: &str) -> String {
+pub(crate) fn literal_unzip_member_pattern(name: &str) -> String {
     let mut pattern = String::with_capacity(name.len());
     for (position, character) in name.chars().enumerate() {
         match (position, character) {

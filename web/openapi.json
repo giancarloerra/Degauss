@@ -32,6 +32,17 @@
     "schemas": {
       "Session": {"type": "object", "required": ["csrf", "encrypted"], "properties": {"csrf": {"type": "string"}, "encrypted": {"type": "boolean"}}},
       "Command": {"description": "Tagged command. Each command accepts only its documented fields. Nested native definitions are documented in docs/web-access.md. Unknown actions/fields are rejected.", "oneOf": [
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"ai-guides"}}},
+        {"type":"object","required":["action","revision","enabled","provider"],"additionalProperties":false,"properties":{"action":{"const":"ai-setup"},"revision":{"type":"string"},"enabled":{"type":"boolean"},"provider":{"enum":["OpenAi","Claude"]}}},
+        {"type":"object","required":["action","revision","provider","key","accept_card_storage"],"additionalProperties":false,"properties":{"action":{"const":"ai-key"},"revision":{"type":"string"},"provider":{"enum":["OpenAi","Claude"]},"key":{"type":"string","writeOnly":true,"maxLength":2048},"accept_card_storage":{"type":"boolean"}}},
+        {"type":"object","required":["action","name"],"additionalProperties":false,"properties":{"action":{"const":"ai-prompt"},"name":{"type":"string"},"previous":{"type":["string","null"]},"text":{"type":["string","null"]}}},
+        {"type":"object","required":["action","question"],"additionalProperties":false,"properties":{"action":{"const":"ai-generate"},"question":{"type":"string","minLength":1,"maxLength":2000},"whole":{"type":"boolean","default":false}}},
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"ai-confirm"}}},
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"ai-cancel"}}},
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"catalogue-status"}}},
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"catalogue-check"}}},
+        {"type":"object","required":["action","revision"],"additionalProperties":false,"properties":{"action":{"const":"catalogue-install"},"revision":{"type":"integer","minimum":1}}},
+        {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"const":"catalogue-cancel"}}},
         {"type":"object","required":["action"],"additionalProperties":false,"properties":{"action":{"enum":["state","web-settings","web-certificate-renew","ini-profiles","systems","collections","options","themes","controllers","scraper-settings","attract","history","favorite-folders","images"]}}},
         {"type":"object","required":["action","revision","config"],"additionalProperties":false,"properties":{"action":{"const":"web-settings-save"},"revision":{"type":"string"},"config":{"$ref":"#/components/schemas/WebConfig"},"password":{"type":["string","null"],"format":"password"}}},
         {"type":"object","required":["action","slot"],"additionalProperties":false,"properties":{"action":{"const":"ini-switch"},"slot":{"type":"integer","minimum":0,"maximum":3}}},

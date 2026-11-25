@@ -515,6 +515,7 @@ export component DegaussWindow inherits Window {
     // 6 = the complete, scrollable game information.
     in property <int> screen: 0;
     in property <string> about-version;
+    in property <string> about-ip;
     in property <string> about-line;
     in property <string> about-copyright;
     in property <string> about-licence;
@@ -659,6 +660,7 @@ export component DegaussWindow inherits Window {
     in property <length> saver-cell;
     in property <length> saver-offset;
     in property <bool> saver-launchable: false;
+    in property <bool> saver-cover-only: false;
     in property <string> overlay;
     in property <bool> overlay-dismissible;
     in property <float> overlay-offset;
@@ -808,6 +810,17 @@ export component DegaussWindow inherits Window {
                     height: parent.height * 38%;
                     x: (parent.width - self.width) / 2;
                     y: parent.height * 18%;
+                }
+
+                Text {
+                    visible: root.about-ip != "";
+                    text: root.about-ip;
+                    color: root.c-text;
+                    width: parent.width;
+                    height: logo.y;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-size: root.small-glyph;
                 }
 
                 Text {
@@ -2522,7 +2535,7 @@ export component DegaussWindow inherits Window {
                 // with it. Sized to its own text and cut to the cell, so a
                 // long title cannot spill onto the picture beside it.
                 Rectangle {
-                    visible: row.has-cover && row.title != "";
+                    visible: !root.saver-cover-only && row.has-cover && row.title != "";
                     background: root.c-bar;
                     border-radius: 2px;
                     width: Math.min(
@@ -2543,7 +2556,7 @@ export component DegaussWindow inherits Window {
                     }
                 }
             }
-            if root.saver-launchable: Rectangle {
+            if root.saver-launchable && !root.saver-cover-only: Rectangle {
                 background: root.c-bar;
                 border-radius: 2px;
                 width: launch-hint.preferred-width + root.pad * 2;

@@ -471,6 +471,8 @@ pub struct Settings {
     pub show_scripts: Option<bool>,
     #[serde(default)]
     pub show_explore: Option<bool>,
+    pub ai_enabled: Option<bool>,
+    pub ai_provider: Option<crate::ai_guides::Provider>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collections: BTreeMap<String, crate::explore::Collection>,
     #[serde(default)]
@@ -537,6 +539,8 @@ pub struct Settings {
     /// Allow launching the pictured game and moving between systems in the
     /// screensaver. Absent is off, preserving the wake-on-any-button behavior.
     pub attract_mode: Option<bool>,
+    /// Hide only the two artwork overlays during active Attract Mode.
+    pub attract_cover_only: Option<bool>,
     /// Show an immediate Attract Mode launcher in the general menu.
     /// Absent is off, independently of automatic screensaver settings.
     #[serde(default)]

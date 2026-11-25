@@ -78,6 +78,7 @@ pub enum OptionId {
     ShowUnstable,
     ShowScripts,
     ShowExplore,
+    AiGuides,
     /// Preferred installed variant for ordinary game launches.
     CorePreference,
     /// Preferred available source for systems left on Automatic.
@@ -92,6 +93,7 @@ pub enum OptionId {
     ShowBar,
     /// Read the card again into the written-down copy of it.
     RebuildCache,
+    CatalogueUpdate,
     /// Open ScreenScraper for every supported system on the card.
     ScrapeAll,
     /// Gather favourites at the top of a folder.
@@ -123,6 +125,7 @@ pub enum OptionId {
     Screensaver,
     /// Whether the screensaver's pictured game can be launched.
     AttractMode,
+    AttractCoverOnly,
     /// Offer an immediate Attract Mode entry in the general menu.
     AttractModeMenu,
     /// How quickly the screensaver strip moves, independently of idle time.
@@ -187,6 +190,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
     OptionId::ShowExplore,
+    OptionId::AiGuides,
     OptionId::ShowEmpty,
     OptionId::HideMissingArcadeRoms,
     OptionId::ShowHidden,
@@ -200,10 +204,12 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Screensaver,
     OptionId::AttractMode,
+    OptionId::AttractCoverOnly,
     OptionId::AttractModeMenu,
     OptionId::ScreensaverSpeed,
     OptionId::RebuildCache,
     OptionId::ScrapeAll,
+    OptionId::CatalogueUpdate,
     OptionId::Spacer,
     OptionId::Advanced,
 ];
@@ -324,6 +330,7 @@ impl OptionsPage {
                 OptionId::ShowBar,
                 OptionId::Screensaver,
                 OptionId::AttractMode,
+                OptionId::AttractCoverOnly,
                 OptionId::AttractModeMenu,
                 OptionId::ScreensaverSpeed,
             ],
@@ -343,12 +350,14 @@ impl OptionsPage {
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
                 OptionId::ShowExplore,
+                OptionId::AiGuides,
                 OptionId::ShowEmpty,
                 OptionId::HideMissingArcadeRoms,
                 OptionId::ShowHidden,
                 OptionId::ResetHidden,
                 OptionId::RebuildCache,
                 OptionId::ScrapeAll,
+                OptionId::CatalogueUpdate,
             ],
             Self::Display => &[
                 OptionId::VideoPreset,
@@ -414,6 +423,8 @@ impl OptionId {
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::ShowExplore => "Show Explore Games",
+            OptionId::AiGuides => "Explore with AI",
+            OptionId::CatalogueUpdate => "Check for System Catalogue Updates",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
             OptionId::DefaultArtworkPack => "Default Artwork Pack",
@@ -441,6 +452,7 @@ impl OptionId {
             OptionId::ShiftY => "Screen Position, Up and Down",
             OptionId::Screensaver => "Screensaver",
             OptionId::AttractMode => "Attract Mode",
+            OptionId::AttractCoverOnly => "Attract Mode Cover Only",
             OptionId::AttractModeMenu => "Show Attract Mode on Home",
             OptionId::ScreensaverSpeed => "Screensaver Speed",
             OptionId::Advanced => "Developer",
@@ -538,6 +550,8 @@ impl OptionId {
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts on Home. Run installed scripts and return to Degauss when they finish.",
             OptionId::ShowExplore => "Show Explore Games on Home. Search across indexed systems without scanning game folders.",
+            OptionId::AiGuides => "Set up optional game guides using your own OpenAI or Claude API key.",
+            OptionId::CatalogueUpdate => "Check for newer compatible system definitions. This does not update cores or change a custom catalogue.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
@@ -596,6 +610,9 @@ impl OptionId {
             }
             OptionId::AttractModeMenu => {
                 "Add Attract Mode to Home for immediate start, independent of the idle screensaver."
+            }
+            OptionId::AttractCoverOnly => {
+                "Show only the scrolling pictures in Attract Mode. Launch and system controls still work."
             }
             OptionId::ScreensaverSpeed => {
                 "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."

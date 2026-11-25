@@ -7,6 +7,36 @@ use serde_json::Value;
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Command {
     State,
+    CatalogueStatus,
+    CatalogueCheck,
+    CatalogueInstall {
+        revision: u64,
+    },
+    CatalogueCancel,
+    AiGuides,
+    AiSetup {
+        revision: String,
+        enabled: bool,
+        provider: crate::ai_guides::Provider,
+    },
+    AiKey {
+        revision: String,
+        provider: crate::ai_guides::Provider,
+        key: String,
+        accept_card_storage: bool,
+    },
+    AiPrompt {
+        name: String,
+        previous: Option<String>,
+        text: Option<String>,
+    },
+    AiGenerate {
+        question: String,
+        #[serde(default)]
+        whole: bool,
+    },
+    AiConfirm,
+    AiCancel,
     WebSettings,
     WebSettingsSave {
         revision: String,
@@ -264,7 +294,10 @@ fn page_size() -> usize {
 
 impl Command {
     pub fn changes(&self) -> bool {
-        if matches!(self, Self::WebSettings | Self::IniProfiles) {
+        if matches!(
+            self,
+            Self::WebSettings | Self::IniProfiles | Self::AiGuides | Self::CatalogueStatus
+        ) {
             return false;
         }
         !matches!(

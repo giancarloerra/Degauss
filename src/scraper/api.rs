@@ -75,6 +75,60 @@ impl CurlTransport {
         limit: u64,
         max_kib_per_second: Option<u64>,
     ) -> Result<HttpResponse> {
+        self.request(url, limit, max_kib_per_second, None)
+    }
+
+    /// Only these provider-owned endpoints may receive a guide credential.
+    /// A key and JSON body travel via curl's stdin, never argv or redirects.
+    pub(crate) fn guide_post(
+        &self,
+        provider: crate::ai_guides::Provider,
+        key: &str,
+        body: &str,
+    ) -> Result<HttpResponse> {
+        use crate::ai_guides::Provider;
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "Invalid API key characters",
+            ));
+        }
+        let (url, headers) = match provider {
+            Provider::OpenAi => (
+                "https://api.openai.com/v1/responses",
+                vec![format!("Authorization: Bearer {key}")],
+            ),
+            Provider::Claude => (
+                "https://api.anthropic.com/v1/messages",
+                vec![
+                    format!("x-api-key: {key}"),
+                    "anthropic-version: 2023-06-01".to_owned(),
+                ],
+            ),
+        };
+        self.request(url, 512 * 1024, None, Some((&headers, body)))
+            .map_err(|error| service_transport_error(error, provider.label()))
+    }
+
+    /// The catalogue client constructs these URLs from validated Git object IDs.
+    pub(crate) fn catalogue_get(&self, url: &str, limit: u64) -> Result<HttpResponse> {
+        if !(url=="https://api.github.com/repos/giancarloerra/Degauss/git/matching-refs/tags/catalogue-v1-" ||
+            url.strip_prefix("https://raw.githubusercontent.com/giancarloerra/Degauss/").is_some_and(|s|{
+                s.split_once('/').is_some_and(|(sha,file)|sha.len()==40&&sha.bytes().all(|b|b.is_ascii_hexdigit())&&matches!(file,"catalogue/revision.json"|"assets/systems.toml"))
+            })){
+            return Err(Error::new(ErrorKind::InvalidRequest,"Invalid system catalogue URL."));
+        }
+        self.fetch(url, limit, None)
+            .map_err(|error| service_transport_error(error, "GitHub"))
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        limit: u64,
+        max_kib_per_second: Option<u64>,
+        post: Option<(&[String], &str)>,
+    ) -> Result<HttpResponse> {
         if self.cancelled.load(Ordering::Relaxed) {
             return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
         }
@@ -86,13 +140,20 @@ impl CurlTransport {
         }
         let timeout = request_timeout(url, limit, max_kib_per_second);
         let response_file = ResponseFile::create()?;
-        let config = curl_config(
+        let mut config = curl_config(
             url,
             response_file.path(),
             limit,
             max_kib_per_second,
             self.ca_bundle.as_deref(),
         );
+        if let Some((headers, body)) = post {
+            config.push_str("header = \"Content-Type: application/json\"\n");
+            for header in headers {
+                config.push_str(&format!("header = \"{}\"\n", curl_quote(header)));
+            }
+            config.push_str(&format!("data-binary = \"{}\"\n", curl_quote(body)));
+        }
         // `-q` must be curl's first option. It prevents a user curlrc from
         // changing the request or copying credentials elsewhere.
         let mut child = Command::new("curl")
@@ -337,6 +398,15 @@ fn curl_spawn_error(error: std::io::Error) -> Error {
 
 fn libretro_transport_error(mut error: Error) -> Error {
     error.detail = error.detail.replace("ScreenScraper", "Libretro");
+    error
+}
+
+fn service_transport_error(mut error: Error, service: &str) -> Error {
+    if error.kind == ErrorKind::Cancelled {
+        error.detail = format!("{service} request cancelled.");
+    } else {
+        error.detail = error.detail.replace("ScreenScraper", service);
+    }
     error
 }
 

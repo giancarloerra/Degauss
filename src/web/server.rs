@@ -666,6 +666,13 @@ async fn command(
     if let Err(error) = authenticated(&state, &headers, true) {
         return *error;
     }
+    if matches!(&command, Command::AiKey { .. }) && state.mode != Mode::Https {
+        return failure(
+            StatusCode::FORBIDDEN,
+            "https-required",
+            "Use HTTPS on your local network to set or clear an AI key.",
+        );
+    }
     let request = if let Command::WebSettingsSave {
         revision,
         config,

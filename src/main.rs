@@ -8,12 +8,14 @@
 
 slint::include_modules!();
 
+mod ai_guides;
 mod app;
 mod arcade_roms;
 mod artwork_pack;
 mod artwork_source;
 mod browse;
 mod cache;
+mod catalogue_update;
 mod category_images;
 mod config;
 mod controller;
@@ -427,7 +429,8 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .systems
         .clone()
         .unwrap_or_else(|| beside_binary("systems.toml"));
-    let table = systems::load_table(&systems_path)?;
+    let catalogue_location = catalogue_update::Location::new(&systems_path, &config_path);
+    let table = catalogue_location.load()?;
     let config = Config::load_for_systems(&config_path, &table)?;
 
     let settings_path = config_path
@@ -519,6 +522,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     let names = browse::DisplayNames::read(&Path::new(&config.menu_root).join("names.txt"));
 
     Ok(Loaded {
+        catalogue_location: Some(catalogue_location),
         config,
         settings,
         settings_path,
@@ -1308,7 +1312,13 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
             ) {
                 Ok(Some(mgl)) => {
                     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                    favorites::add_game(&into, &stem, &mgl)
+                    launch::save_library_favorite(
+                        Path::new(&loaded.config.menu_root),
+                        &config,
+                        &into,
+                        &stem,
+                        &mgl,
+                    )
                 }
                 // A core file is linked to, not described.
                 Ok(None) => {
@@ -2969,6 +2979,7 @@ category = "Favorites"
         let mut config = Config::parse("[app]\n", Path::new("fixture")).unwrap();
         config.menu_root = root.to_string_lossy().into_owned();
         let loaded = Loaded {
+            catalogue_location: None,
             config,
             settings: Settings::default(),
             settings_path: root.join("settings.toml"),

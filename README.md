@@ -27,8 +27,8 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 11. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
 12. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
 13. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-14. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
-15. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+14. **Games Explorer** searches your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks. [Explore with AI](#explore-with-ai-create-and-add-an-api-key) uses your own OpenAI or Claude key to turn installed games into illustrated, playable guides.
+15. **Attract Mode** showcases your collection, optionally with artwork alone. Switch systems or launch the pictured game.
 16. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
 17. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
 18. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
@@ -115,6 +115,7 @@ Click the image to watch Degauss on YouTube.
 
 - [Using it](#using-it)
   - [Explore Games and saved collections](#explore-games-and-saved-collections)
+  - [Explore with AI: create and add an API key](#explore-with-ai-create-and-add-an-api-key)
   - [Personal Home](#personal-home)
   - [Running MiSTer scripts](#running-mister-scripts)
   - [Browsing core updates](#browsing-core-updates)
@@ -182,6 +183,9 @@ Click the image to watch Degauss on YouTube.
 | **B** (escape) | back, out of the folder |
 | **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | **Menu**: Options, Help, About, Exit to MiSTer. Scripts and optional Attract Mode are on Home |
+
+**Menu → About** shows the MiSTer’s current local IPv4 address even when Web
+Access is off. Reopen About after changing networks to refresh the address.
 
 **Controller mappings:** MiSTer's mapping remains the default, including its
 **Menu: OK** and **Menu: Back** assignments. **Options → Navigation → Controllers**
@@ -1124,7 +1128,8 @@ for ROM assembly, disk firmware and model-specific drive requirements.
 D88 disks mount in Drive 1 (image slot 0); an explicit MGL can use Drive 2
 (slot 1). CMT/T88 tapes use file slot 1, ROM/BIN expansions use slot 2 and
 N80 memory images use slot 3. Load N80 images once the matching BASIC mode
-is ready. D88 needs the disk unit ROM in `boot.rom`. See the
+is ready. From build 20261118, CAS tapes also use the tape slot.
+D88 needs the disk unit ROM in `boot.rom`. See the
 [PC-8001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/d05d384f6829a3dde9d2dfd569e8ab64bcc72e72/docs/PC8001/README.md)
 for the firmware and model setup. This is separate from the PC-8801 library.
 
@@ -1139,6 +1144,18 @@ tapes in slot 0; an explicit MGL can use Drive 2 (slot 2). **Camputers Lynx**
 (`games/Lynx48`) mounts LDF disks in slot 0 on the 96K/128K models and loads
 TZX/WAV tapes in file slot 1. These new media need builds dated 20261118 or
 newer; older builds keep their VZ and TAP support respectively.
+
+**VTech Laser 350/500/700** uses `games/LASER500`, separate from the Laser
+310. PRG/BIN loads a program, NIC/DSK mounts the first disk, and CAS/WAV
+mounts a tape. **Philips VG5000µ** (`games/VG5000`) accepts K7/WAV tapes.
+**Toshiba Pasopia 7** (`games/Pasopia7`) mounts D88 disks, CAS/WAV tapes and
+BIN RAM packs; the supplied blank RAM-pack template is not a game.
+
+**Macintosh IIci** (`games/MACIICI`) mounts DSK floppies, VHD disks and
+ISO/TOAST CDs. IMG is shared by floppies and hard disks; use an explicit
+MGL if you need a particular slot. **Fujitsu FM-8** is a compatible-core
+choice for FM-7 tapes with builds from 20261123. Its machine settings are
+separate from FM-7 settings.
 
 **Memotech MTX500/512** (`games/MTX512`) sends MTX/WAV tapes to **Insert Tape**
 (file slot 1) and mounts MFL/DSK images in SDX Disc A (image slot 1).
@@ -1223,6 +1240,8 @@ disks mount in slot 2. Existing floppy launches remain unchanged.
 SPARCstation 20 uses `games/SunSparcStation`: hard disks mount in slot 0,
 CDs in slot 2. Use explicit MGLs for secondary disks (slot 1), multiple media
 or a session PROM override. Firmware and NVRAM remain managed by the core.
+The 60 MHz, 55 MHz and legacy core builds share this existing library;
+installed alternatives appear in the compatible-core chooser.
 
 Version 1.1.1 adds these indexed media profiles, using the current distributed
 cores and their normal game folders:
@@ -1632,6 +1651,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Bottom Bar While Browsing | On by default. Show the time, Ethernet/Wi-Fi/Bluetooth indicators and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
+| Appearance | Attract Mode Cover Only | Hide the game title and control hint in Attract Mode while keeping launch and system switching available |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Start Last Game on Boot | Off by default. With Degauss Main, start the last successfully launched game once after power-on. Press B during the three-second prompt to cancel |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
@@ -1766,7 +1786,7 @@ rows, each with its own gamelist and artwork. Equal folder names show their
 paths so the locations can be distinguished. Keep existing MRA/MGL files in
 place, including an isolated collection's support-core directory.
 
-The user file survives updates and is not rewritten by Options. Removing an
+These folder declarations survive updates and are not rewritten by Options. Removing an
 entry restores the system table's normal locations after the same restart
 and system rebuild. Invalid declarations follow the user-file error handling
 below; absent optional directories follow normal folder discovery.
@@ -1800,7 +1820,8 @@ cover_size = 400
 
 Do not copy all defaults into the user file. UI preferences remain in
 `settings.toml`; edit and save colours through **Options → Appearance → Theme
-→ press A**. The user file is not rewritten by Options. An unreadable or
+→ press A**. Saving or deleting a [custom AI prompt](#explore-with-ai-create-and-add-an-api-key) edits only
+`[ai_prompts]` in the user file. Ordinary Options changes do not rewrite it. An unreadable or
 invalid user file is ignored for that run, with its path and underlying cause
 in `/tmp/degauss.log`; the base configuration, UI preferences and themes still
 apply. No partial overrides are used.
@@ -2943,6 +2964,12 @@ leaving Degauss, but does not add an indexed game list or artwork section.
 Those require a system definition. Rebuilding the library or enabling
 **Show Systems with No Games** cannot add a missing definition.
 
+To check for definitions added since your release, open **Options → Library →
+Check for System Catalogue Updates**. This is manual: choose **Install** to use
+a compatible update next time Degauss opens. Offline checks and user-edited
+tables leave the working catalogue alone. It does not update FPGA cores.
+See [system catalogue updates](docs/catalogue-revisions.md).
+
 ### How can I rebuild just one system instead of the whole library?
 
 1. Enter the affected system, for example **Console → NES**.
@@ -3338,6 +3365,39 @@ and every other feature remain in the static Rust binary.
 
 `MiSTer_Degauss` is built from its own repository, which carries the script
 that does it. That one is C++ and does need a cross-compiler.
+
+## Explore with AI: create and add an API key
+
+**Explore with AI** is optional. Choose one provider:
+
+- **OpenAI:** Sign in to [OpenAI API Keys](https://platform.openai.com/api-keys).
+  Choose **Create new secret key**, select your project and name the key
+  `Degauss`. Create it and copy the secret while it is visible.
+- **Claude:** Sign in to [Claude Console API Keys](https://platform.claude.com/settings/keys).
+  Choose **Create key**, name it `Degauss`, select your account and workspace,
+  choose an expiration, create it and copy the secret.
+
+On MiSTer, open **Options → Library → Explore with AI**. Choose your **Provider**,
+select **Set API key**, enter the key and confirm **Save key on this card**.
+To paste a long key instead, open Degauss Web Access over **HTTPS**, then
+**Settings → Library → Explore with AI**. Anyone who can read the card can
+read a saved key. **Clear saved key** removes it from Degauss; revoke it in
+the provider’s console if needed. Requests use your provider's API balance.
+
+Turn **Show on Home** on, then open **Explore with AI**. Choose **I’m Feeling
+Lucky** for a surprise tour, a built-in prompt, or **Manage custom prompts**
+to write your own. You can also edit the same prompts in `degauss-user.toml`:
+
+```toml
+[ai_prompts]
+"Arcade to Amiga" = "Find arcade originals and their Amiga conversions and tell me what changed."
+```
+
+The provider gets your question and game titles grouped by system, not ROMs,
+storage paths or artwork. Normal guides search the indexed library and send
+a selection; **Read whole catalogue** asks for confirmation before sending
+all indexed titles in batches. Artwork and launch targets come from your
+own MiSTer. **Last guide** reopens the result without another AI request.
 
 ## Licence
 

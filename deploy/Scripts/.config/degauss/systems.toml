@@ -951,7 +951,7 @@ index = 1
 delay = 1
 
 [[systems]]
-name = "Laser 350/500/700"
+name = "VTech Laser 310"
 id = "Laser"
 folders = ["Laser"]
 rbf = "_Computer/Laser310"
@@ -973,6 +973,28 @@ delay = 1
 extensions = ["cas", "wav"]
 type = "s"
 index = 0
+delay = 1
+
+[[systems]]
+name = "VTech Laser 350/500/700"
+id = "LASER500"
+folders = ["LASER500"]
+rbf = "_Computer/Laser500"
+extensions = ["prg", "bin", "nic", "dsk", "cas", "wav", "mgl"]
+[[systems.launch]]
+extensions = ["prg", "bin"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["nic", "dsk"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["cas", "wav"]
+type = "s"
+index = 2
 delay = 1
 
 [[systems]]
@@ -1108,12 +1130,27 @@ name = "MSX"
 id = "MSX"
 folders = ["MSX"]
 rbf = "_Computer/MSX"
-extensions = ["vhd", "mgl"]
+extensions = ["vhd", "dsk", "rom", "cas", "mgl"]
 
 [[systems.launch]]
 extensions = ["vhd"]
 type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
 index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 3
+delay = 1
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 5
 delay = 1
 
 [[systems]]
@@ -1121,7 +1158,32 @@ name = "MSX1"
 id = "MSX1"
 folders = ["MSX1"]
 rbf = "_Computer/MSX1"
-extensions = ["dsk", "rom", "mgl"]
+extensions = ["dsk", "rom", "cas", "vhd", "mgl"]
+[[systems.compatible_cores]]
+id = "unified-msx"
+label = "Unified MSX"
+rbf = "_Computer/MSX"
+minimum_build = "20261118"
+[[systems.compatible_cores.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+[[systems.compatible_cores.launch]]
+extensions = ["rom"]
+type = "f"
+index = 3
+delay = 1
+[[systems.compatible_cores.launch]]
+extensions = ["cas"]
+type = "f"
+index = 5
+delay = 1
+[[systems.compatible_cores.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
 
 [[systems.launch]]
 extensions = ["dsk"]
@@ -2322,6 +2384,18 @@ id = "FM-7"
 folders = ["FM-7"]
 rbf = "_Computer/FM-7"
 extensions = ["t77", "d77", "d88", "mgl"]
+[[systems.compatible_cores]]
+id = "fm8"
+label = "Fujitsu FM-8"
+rbf = "_Computer/FM-7"
+setname = "DegaussFM8"
+same_dir = true
+minimum_build = "20261123"
+[[systems.compatible_cores.launch]]
+extensions = ["t77"]
+type = "f"
+index = 1
+delay = 1
 [[systems.launch]]
 extensions = ["t77"]
 type = "f"
@@ -2443,14 +2517,14 @@ name = "NEC PC-8001"
 id = "PC8001"
 folders = ["PC8001"]
 rbf = "_Computer/PC8001"
-extensions = ["d88", "cmt", "t88", "n80", "rom", "bin", "mgl"]
+extensions = ["d88", "cmt", "t88", "cas", "n80", "rom", "bin", "mgl"]
 [[systems.launch]]
 extensions = ["d88"]
 type = "s"
 index = 0
 delay = 1
 [[systems.launch]]
-extensions = ["cmt", "t88"]
+extensions = ["cmt", "t88", "cas"]
 type = "f"
 index = 1
 delay = 1
@@ -2898,7 +2972,11 @@ delay = 1
 name = "Sun SPARCstation 20"
 id = "SunSparcStation"
 folders = ["SunSparcStation"]
-rbf = "_Computer/SunSparcStation20"
+rbf = "_Computer/SunSparcStation20_60mhz"
+compatible_cores = [
+    { id = "sparc55", label = "SPARCstation 20 (55 MHz)", rbf = "_Computer/SunSparcStation20_55mhz" },
+    { id = "sparc-legacy", label = "SPARCstation 20 (legacy)", rbf = "_Computer/SunSparcStation20" },
+]
 extensions = ["vhd", "img", "hda", "raw", "iso", "cue", "chd", "mgl"]
 category = "Computer"
 [[systems.launch]]
@@ -2919,6 +2997,62 @@ folders = ["Cray-XMP"]
 rbf = "_Computer/Cray-XMP"
 extensions = ["mgl"]
 category = "Computer"
+
+[[systems]]
+name = "Philips VG5000µ"
+id = "VG5000"
+folders = ["VG5000"]
+rbf = "_Computer/VG5000"
+extensions = ["k7", "wav", "mgl"]
+[[systems.launch]]
+extensions = ["k7", "wav"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Toshiba Pasopia 7"
+id = "Pasopia7"
+folders = ["Pasopia7"]
+rbf = "_Computer/Pasopia7"
+extensions = ["d88", "cas", "wav", "bin", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["cas", "wav"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["bin"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems]]
+name = "Macintosh IIci"
+id = "MACIICI"
+folders = ["MACIICI"]
+rbf = "_Computer/MacIIci"
+extensions = ["dsk", "img", "vhd", "iso", "toast", "mgl"]
+[[systems.launch]]
+extensions = ["dsk", "img"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd", "img"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "toast"]
+type = "s"
+index = 4
+delay = 1
 
 [[systems]]
 name = "Macintosh SE/30"

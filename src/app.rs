@@ -49,6 +49,8 @@ use crate::input::{
 };
 use crate::list_state::ListState;
 include!("explore_app.rs");
+include!("ai_app.rs");
+include!("catalogue_app.rs");
 include!("home_app.rs");
 include!("custom_view_app.rs");
 include!("folder_options_app.rs");
@@ -315,6 +317,8 @@ enum OptionOperation {
     None,
     WebAccess(OptionId),
     OpenControllers,
+    OpenAiSettings,
+    CheckCatalogue,
     Adjust(isize),
     OpenThemeEditor,
     OpenCustomViews,
@@ -344,6 +348,14 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         OptionId::Controllers => match input {
             OptionInput::Activate => OptionOperation::OpenControllers,
             OptionInput::Previous | OptionInput::Next => OptionOperation::None,
+        },
+        OptionId::AiGuides => match input {
+            OptionInput::Activate => OptionOperation::OpenAiSettings,
+            _ => OptionOperation::None,
+        },
+        OptionId::CatalogueUpdate => match input {
+            OptionInput::Activate => OptionOperation::CheckCatalogue,
+            _ => OptionOperation::None,
         },
         OptionId::CustomViews => match input {
             OptionInput::Activate => OptionOperation::OpenCustomViews,
@@ -432,6 +444,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShiftY
         | OptionId::Screensaver
         | OptionId::AttractMode
+        | OptionId::AttractCoverOnly
         | OptionId::AttractModeMenu
         | OptionId::ScreensaverSpeed => OptionOperation::Adjust(input.delta()),
     }
@@ -3084,6 +3097,9 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    AiKey,
+    AiPromptName,
+    AiPromptText,
     WebPassword,
     WebPort,
     UnlockKiosk,
@@ -4140,6 +4156,8 @@ impl CoreUpdateGames {
 }
 
 pub struct App {
+    catalogue_update: CatalogueBrowser,
+    ai: AiBrowser,
     web: WebAccess,
     controllers: ControllerBrowser,
     kiosk_locked: bool,
@@ -4623,6 +4641,7 @@ pub struct App {
 /// Everything read from disk before the interface exists: what the user
 /// configured, what they have changed since, and what is on the card.
 pub struct Loaded {
+    pub catalogue_location: Option<crate::catalogue_update::Location>,
     pub config: Config,
     pub settings: Settings,
     pub settings_path: PathBuf,
@@ -4685,6 +4704,7 @@ impl App {
             Err(error) => (crate::history::History::default(), Some(error.to_string())),
         };
         let Loaded {
+            catalogue_location,
             config,
             mut settings,
             settings_path,
@@ -4901,6 +4921,11 @@ impl App {
             web: WebAccess::default(),
             kiosk_locked,
             explore: ExploreBrowser::default(),
+            ai: AiBrowser::default(),
+            catalogue_update: CatalogueBrowser {
+                location: catalogue_location,
+                ..Default::default()
+            },
             speed: settings
                 .speed_step
                 .unwrap_or(SPEED_START)
@@ -12639,6 +12664,9 @@ impl App {
                 if self.settings.show_explore.unwrap_or(false) {
                     categories.push((crate::explore::NAME.to_string(), 0));
                 }
+                if self.settings.ai_enabled.unwrap_or(false) && !self.kiosk_locked {
+                    categories.push((crate::ai_guides::NAME.to_string(), 0));
+                }
                 continue;
             }
             // Other holds the cores that are not games, which is not what
@@ -12870,6 +12898,12 @@ impl App {
 
     fn open_category_named(&mut self, name: String) {
         if self.kiosk_locked && !self.kiosk_category_allowed(&name) {
+            return;
+        }
+        if name == crate::ai_guides::NAME {
+            if self.settings.ai_enabled.unwrap_or(false) && !self.kiosk_locked {
+                self.ai_open(AiPage::Prompts);
+            }
             return;
         }
         if name == crate::explore::NAME {
@@ -13561,6 +13595,8 @@ impl App {
             OptionOperation::WebAccess(option) => self.open_web_option(option),
             OptionOperation::None => (),
             OptionOperation::OpenControllers => self.open_controllers(),
+            OptionOperation::OpenAiSettings => self.ai_open(AiPage::Setup),
+            OptionOperation::CheckCatalogue => self.catalogue_open(),
             OptionOperation::Adjust(delta) => self.adjust_option_value(option, delta),
             OptionOperation::OpenThemeEditor => self.open_theme_editor(),
             OptionOperation::OpenCustomViews => {
@@ -14055,6 +14091,10 @@ impl App {
             OptionId::AttractMode => {
                 self.settings.attract_mode = Some(!self.attract_mode());
             }
+            OptionId::AttractCoverOnly => {
+                self.settings.attract_cover_only =
+                    Some(!self.settings.attract_cover_only.unwrap_or(false));
+            }
             OptionId::AttractModeMenu => {
                 self.settings.attract_mode_menu =
                     Some(!self.settings.attract_mode_menu.unwrap_or(false));
@@ -14305,6 +14345,8 @@ impl App {
                 self.apply_geometry();
             }
             OptionId::Controllers
+            | OptionId::AiGuides
+            | OptionId::CatalogueUpdate
             | OptionId::CustomViews
             | OptionId::ResetCustomViews
             | OptionId::RebuildCache
@@ -14448,6 +14490,8 @@ impl App {
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
             OptionId::ShowExplore => on_off(self.settings.show_explore.unwrap_or(false)),
+            OptionId::AiGuides => on_off(self.settings.ai_enabled.unwrap_or(false)),
+            OptionId::CatalogueUpdate => ">".into(),
             OptionId::CorePreference => self
                 .settings
                 .core_preference
@@ -14511,6 +14555,7 @@ impl App {
                 seconds => format!("{} minutes", seconds / 60),
             },
             OptionId::AttractMode => on_off(self.attract_mode()),
+            OptionId::AttractCoverOnly => on_off(self.settings.attract_cover_only.unwrap_or(false)),
             OptionId::AttractModeMenu => on_off(self.settings.attract_mode_menu.unwrap_or(false)),
             OptionId::ScreensaverSpeed => match self.screensaver_speed() {
                 2 => "2x".to_string(),
@@ -15931,14 +15976,20 @@ impl App {
         let Some(key) = keys.get(self.name_keyboard_list.selected()).copied() else {
             return;
         };
+        let limit = match self.name_keyboard_purpose {
+            NamePurpose::AiKey => guides::KEY_LIMIT,
+            NamePurpose::AiPromptName => guides::PROMPT_NAME_LIMIT,
+            NamePurpose::AiPromptText => guides::PROMPT_TEXT_LIMIT,
+            _ => 255,
+        };
         match key {
             NameKey::Character(character) => {
-                if self.name_keyboard_draft.chars().count() < 255 {
+                if self.name_keyboard_draft.chars().count() < limit {
                     self.name_keyboard_draft.push(character);
                 }
             }
             NameKey::Space => {
-                if self.name_keyboard_draft.chars().count() < 255 {
+                if self.name_keyboard_draft.chars().count() < limit {
                     self.name_keyboard_draft.push(' ');
                 }
             }
@@ -15956,6 +16007,9 @@ impl App {
     fn finish_name_keyboard(&mut self) {
         let draft = self.name_keyboard_draft.clone();
         match self.name_keyboard_purpose.clone() {
+            NamePurpose::AiKey | NamePurpose::AiPromptName | NamePurpose::AiPromptText => {
+                self.ai_finish_input(draft)
+            }
             NamePurpose::WebPassword => self.finish_web_password(&draft),
             NamePurpose::WebPort => self.finish_web_port(&draft),
             NamePurpose::UnlockKiosk => {
@@ -16068,6 +16122,9 @@ impl App {
     }
 
     fn handle_name_keyboard(&mut self, action: Action) {
+        if self.ai_keyboard_action(action) {
+            return;
+        }
         if matches!(
             self.name_keyboard_purpose,
             NamePurpose::WebPassword | NamePurpose::WebPort
@@ -16816,7 +16873,13 @@ impl App {
                 let Some(stem) = self.favorite_stem(target, &fav_name, ".mgl", renamed) else {
                     return;
                 };
-                crate::favorites::add_game(target, &stem, &mgl)
+                crate::launch::save_library_favorite(
+                    Path::new(&self.config.menu_root),
+                    &config,
+                    target,
+                    &stem,
+                    &mgl,
+                )
             }
             // A core file is linked to, not described. The link keeps the
             // real filename, not the shown name: the stock script resolves
@@ -21210,7 +21273,26 @@ impl App {
             return None;
         }
 
+        if self.catalogue_input(action) {
+            return None;
+        }
+        if let Some(outcome) = self.ai_input(action) {
+            return outcome;
+        }
         if self.screen == Screen::Information {
+            if action == Action::Accept {
+                if let Some(q) = self.ai_related_question() {
+                    match self.ai_start(q, false) {
+                        Ok(()) => {
+                            if let Some(reader) = self.information.take() {
+                                reader.job.cancel();
+                            }
+                        }
+                        Err(e) => self.ai_fail(e),
+                    }
+                    return None;
+                }
+            }
             self.handle_information(action);
             return None;
         }
@@ -21662,8 +21744,7 @@ impl App {
                         self.screen = Screen::Help;
                         self.apply_geometry();
                     } else if choice == "About" {
-                        self.screen = Screen::About;
-                        self.apply_geometry();
+                        self.open_about();
                     } else {
                         // Leaving is irreversible from the user's point of
                         // view, so it asks.
@@ -21761,6 +21842,16 @@ impl App {
     /// The picture, the words under it, whether the heart should stand in
     /// for both, and whether the picture is game artwork rather than a logo.
     fn current_art(&self) -> (Option<PathBuf>, String, bool, bool) {
+        if self.screen == Screen::Information && self.ai.page == Some(AiPage::Story) {
+            if let Some(game) = self.ai.story_game() {
+                return (
+                    game.row.cover.clone(),
+                    game.row.name.clone(),
+                    false,
+                    game.row.cover.is_some(),
+                );
+            }
+        }
         match (self.screen, self.browsing) {
             (Screen::ArtworkPackMatch, _) => self
                 .menu_list
@@ -22443,6 +22534,9 @@ impl App {
                 let cell = self.saver_cell();
                 let count = self.saver_pool.len();
                 self.ui.set_saver_launchable(false);
+                self.ui.set_saver_cover_only(
+                    self.active_attract_mode() && self.settings.attract_cover_only.unwrap_or(false),
+                );
                 if count > 0 {
                     let travelled = (self.saver_offset / cell).floor();
                     let first = travelled as usize % count;
@@ -22757,7 +22851,9 @@ impl App {
             }
             Screen::Context => {
                 for index in range {
-                    let value = if self.controllers.menu.is_some() {
+                    let value = if self.ai.page.is_some() || self.catalogue_update.open {
+                        String::new()
+                    } else if self.controllers.menu.is_some() {
                         self.controller_rows()
                             .get(index)
                             .map(|(_, value)| value.clone())
@@ -22839,7 +22935,8 @@ impl App {
                     }
                 }
             }
-            Screen::About | Screen::Splash => {
+            Screen::Splash => self.ui.set_about_ip(SharedString::default()),
+            Screen::About => {
                 // The wordmark is drawn by the interface layer; there are no
                 // rows to build.
             }
@@ -23237,6 +23334,9 @@ impl App {
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
                     NamePurpose::WebPassword => "Set Web Password".to_string(),
+                    NamePurpose::AiKey => format!("{} API key", self.ai_provider().label()),
+                    NamePurpose::AiPromptName => "Prompt name".into(),
+                    NamePurpose::AiPromptText => "Prompt text".into(),
                     NamePurpose::WebPort => "Set Web Port".to_string(),
                     NamePurpose::SaveView => "Save Custom View".to_string(),
                     NamePurpose::RenameView(_) => "Rename Custom View".to_string(),
@@ -23567,6 +23667,20 @@ impl App {
             }
         }
         self.ui.set_heading(SharedString::from(heading));
+        if self.catalogue_update.open && self.screen == Screen::Context {
+            self.ui.set_heading("System Catalogue".into());
+            self.ui.set_plain_scope("System Catalogue".into());
+            self.ui
+                .set_plain_help(self.control_hint(&self.catalogue_update.status).into());
+            status = self.catalogue_update.status.clone();
+        }
+        if self.ai.page.is_some() && matches!(self.screen, Screen::Context | Screen::Information) {
+            let (heading, help) = self.ai_chrome();
+            self.ui.set_heading(heading.into());
+            self.ui.set_plain_scope(crate::ai_guides::NAME.into());
+            self.ui.set_plain_help(self.control_hint(&help).into());
+            status = help;
+        }
         if self.controllers.menu.is_some() {
             let (heading, help, controls) = self.controller_heading_help();
             self.ui.set_heading(heading.into());
@@ -23611,6 +23725,10 @@ impl App {
             1 => self.ui.get_plain_help().to_string(),
             4 => self.ui.get_grid_help().to_string(),
             5 => status.clone(),
+            6 if self.ai.page == Some(AiPage::Story) => "A Play   ←→ Next   B Back".to_string(),
+            6 if self.ai_related_question().is_some() => {
+                "A Explore similar   ↑↓ Scroll   B Back".to_string()
+            }
             6 => "↑↓ Scroll   B Back".to_string(),
             _ => String::new(),
         };
@@ -23651,7 +23769,7 @@ impl App {
             self.ui.set_find_query(
                 if matches!(
                     self.name_keyboard_purpose,
-                    NamePurpose::UnlockKiosk | NamePurpose::WebPassword
+                    NamePurpose::UnlockKiosk | NamePurpose::WebPassword | NamePurpose::AiKey
                 ) {
                     "*".repeat(self.name_keyboard_draft.len())
                 } else {
@@ -23860,6 +23978,8 @@ impl App {
                 return Ok(outcome);
             }
             self.poll_misterzine();
+            self.ai_poll();
+            self.catalogue_poll();
             if let Some(outcome) = self.poll_web() {
                 if !matches!(outcome, Outcome::Script(_)) {
                     self.save_settings();
@@ -24318,6 +24438,16 @@ impl App {
     /// Where the user is standing, in a form that can be written down.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn position(&self) -> crate::state::State {
+        if self.ai.page == Some(AiPage::Story) {
+            return crate::state::State::record(
+                AI_RESUME,
+                crate::ai_guides::NAME,
+                &[],
+                self.ai.selected,
+                &self.left_at,
+                &self.category_system,
+            );
+        }
         let mut saved = self.position_browse();
         saved.home = self.home.origin.clone().or_else(|| {
             (self.browsing == Browsing::Categories && self.home.folder.is_some())
@@ -24398,6 +24528,12 @@ impl App {
     /// going back would have led anyway, rather than refusing to start.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn restore_position(&mut self, saved: &crate::state::State) {
+        if saved.system == AI_RESUME {
+            if self.settings.ai_enabled.unwrap_or(false) && !self.kiosk_locked {
+                self.ai_restore_story(saved.selected);
+            }
+            return;
+        }
         if self.kiosk_locked {
             return;
         }
@@ -24708,8 +24844,31 @@ impl App {
         }
     }
 
+    fn open_about(&mut self) {
+        let label = match crate::web::local_addresses() {
+            Ok(addresses) => addresses
+                .into_iter()
+                .find(std::net::IpAddr::is_ipv4)
+                .map_or_else(
+                    || "IP: No address".to_string(),
+                    |address| format!("IP: {address}"),
+                ),
+            Err(error) => {
+                crate::note(&format!("about: {error}"));
+                "IP: Unavailable".to_string()
+            }
+        };
+        self.ui.set_about_ip(label.into());
+        self.screen = Screen::About;
+        self.apply_geometry();
+    }
+
     /// Open a screen directly, for the headless render path.
     pub fn set_screen(&mut self, screen: Screen) {
+        if screen == Screen::About {
+            self.open_about();
+            return;
+        }
         if screen == Screen::Scripts {
             self.open_scripts();
             return;
@@ -25213,6 +25372,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         menu_folder: None,
     };
     let loaded = Loaded {
+        catalogue_location: None,
         config,
         settings: Settings::default(),
         settings_path: root.join("settings.toml"),
@@ -26564,6 +26724,7 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         Duration::from_secs(2),
     );
     let loaded = Loaded {
+        catalogue_location: None,
         config,
         settings: Settings::default(),
         settings_path,
@@ -27594,6 +27755,8 @@ mod tests {
     fn option_actions_are_reachable_only_through_a() {
         let actions = [
             (OptionId::Controllers, OptionOperation::OpenControllers),
+            (OptionId::AiGuides, OptionOperation::OpenAiSettings),
+            (OptionId::CatalogueUpdate, OptionOperation::CheckCatalogue),
             (OptionId::CustomViews, OptionOperation::OpenCustomViews),
             (
                 OptionId::ResetCustomViews,
@@ -27655,6 +27818,8 @@ mod tests {
     fn every_value_uses_left_for_previous_and_right_or_a_for_next() {
         let actions = [
             OptionId::Controllers,
+            OptionId::AiGuides,
+            OptionId::CatalogueUpdate,
             OptionId::CustomViews,
             OptionId::ResetCustomViews,
             OptionId::ResetHidden,

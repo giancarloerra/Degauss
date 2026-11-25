@@ -1059,7 +1059,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "degauss"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "argon2",
  "axum",
@@ -1086,6 +1086,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml",
+ "toml_edit",
  "zune-jpeg",
  "zune-png",
 ]

@@ -805,6 +805,34 @@ impl App {
                 json!({"revision":self.web_revision()})
             }
             WebCommand::Options => self.web_options(),
+            WebCommand::AiGuides => self.web_ai_guides()?,
+            WebCommand::CatalogueStatus=>self.catalogue_web_status(),
+            WebCommand::CatalogueCheck|WebCommand::CatalogueInstall{..}|WebCommand::CatalogueCancel=>self.catalogue_web_command(command)?,
+            WebCommand::AiSetup{revision,enabled,provider}=>{
+                self.web_check_revision(&revision)?;
+                if self.ai.job.is_some()||self.ai.ready.is_some(){return Err(web_error("A guide is in progress."));}
+                let mut next=self.settings.clone();next.ai_provider=Some(provider);next.ai_enabled=Some(enabled);
+                let key=crate::home::category_key(guides::NAME);if enabled{next.home.hidden.remove(&key);}else{next.home.hidden.insert(key);}
+                self.web_save(next)?;self.rebuild_system_list();json!({"revision":self.web_revision()})
+            }
+            WebCommand::AiKey{revision,provider,key,accept_card_storage}=>{
+                self.web_check_revision(&revision)?;
+                if !key.is_empty()&&!accept_card_storage{return Err(web_error("Confirm saving the key on the MiSTer card."));}
+                guides::save_key(self.ai_dir(),provider,&key).map_err(web_error)?;
+                json!({"saved":!key.is_empty()})
+            }
+            WebCommand::AiPrompt{name,previous,text}=>{
+                guides::edit_prompt(&self.ai_user_file(),&name,previous.as_deref(),text.as_deref()).map_err(web_error)?;
+                json!({"saved":true})
+            }
+            WebCommand::AiGenerate{question,whole}=>{
+                if question.trim().is_empty()||question.chars().count()>guides::PROMPT_TEXT_LIMIT{return Err(web_error("Choose or enter a prompt of 1–2000 characters."));}
+                if self.ai.job.is_some()||self.ai.ready.is_some(){return Err(web_error("A guide is already in progress."));}
+                let previous=self.ai.full;self.ai.full=whole;let result=self.ai_start(question,true);self.ai.full=previous;
+                result.map_err(web_error)?;json!({"started":true})
+            }
+            WebCommand::AiConfirm=>{if !self.ai.web_only{return Err(web_error("Confirm this guide on MiSTer."));}self.ai_confirm().map_err(web_error)?;json!({"started":true})}
+            WebCommand::AiCancel=>{if !self.ai.web_only{return Err(web_error("Cancel this guide on MiSTer."));}self.ai_cancel();json!({"cancelled":true})}
             WebCommand::Job { id } => {
                 let mut job = self.web.jobs.get(&id).cloned().ok_or_else(|| {
                     WebError::new(
@@ -1134,6 +1162,7 @@ impl App {
                 if key == crate::home::category_key(crate::explore::NAME) {
                     settings.show_explore = Some(visible);
                 }
+                if key==crate::home::category_key(guides::NAME){settings.ai_enabled=Some(visible);}
                 if visible {
                     settings.home.hidden.remove(&key);
                 } else {
