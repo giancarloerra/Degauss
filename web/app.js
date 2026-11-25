@@ -924,7 +924,7 @@ async function aiGuidesPage(route, epoch) {
     header('Explore with AI / Setup');
     page.append(field('Show on Home', enabled), field('Provider', provider),
       button('Save settings', () => action('ai-setup', { revision: data.revision, enabled: enabled.value === 'on', provider: provider.value })),
-      notice(data.configured ? 'A key is set for the selected provider.' : 'No key set for the selected provider.'));
+      notice((data.provider === 'OpenAi' ? 'OpenAI' : 'Claude') + (data.configured ? ': a key is saved.' : ': no key saved.')));
     if (location.protocol === 'https:') {
       page.append(button('Set API key', () => {
         const secret = input('', 'password'); secret.autocomplete = 'new-password'; secret.required = true;

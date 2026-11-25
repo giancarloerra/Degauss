@@ -492,6 +492,24 @@ mod tests {
             .unwrap();
         assert_eq!(loc.changed().unwrap(), ["NewSystem"]);
         let before = std::fs::read(&loc.installed).unwrap();
+        let mut broken = release.clone();
+        broken.meta.revision += 1;
+        let truncated = bytes[1..].to_vec();
+        assert!(loc
+            .install(broken.clone(), &stop, &|_, _| Ok(truncated.clone()))
+            .is_err());
+        assert!(loc
+            .install(broken, &stop, &|_, _| {
+                stop.store(true, Ordering::Relaxed);
+                Ok(bytes.clone())
+            })
+            .is_err());
+        stop.store(false, Ordering::Relaxed);
+        assert_eq!(
+            std::fs::read(&loc.installed).unwrap(),
+            before,
+            "a failed or cancelled subsequent update must preserve the previous valid revision"
+        );
         let amended = String::from_utf8(bytes.clone())
             .unwrap()
             .replace("name='New system'", "name='Renamed system'");
@@ -553,6 +571,10 @@ mod tests {
         let alternate = Location::new(&d.join("alternate.toml"), &d.join("degauss.toml"));
         std::fs::write(&alternate.shipped, STOCK).unwrap();
         assert!(!alternate.stock().unwrap());
+        std::fs::remove_file(&l.installed).unwrap();
+        std::fs::create_dir(&l.installed).unwrap();
+        assert!(l.install(r, &stop, &|_, _| Ok(bytes.clone())).is_err());
+        assert!(l.installed.is_dir() && std::fs::read(&l.shipped).unwrap() == STOCK);
         std::fs::remove_dir_all(d).unwrap();
     }
 }
