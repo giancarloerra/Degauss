@@ -551,6 +551,44 @@ fn run_connection_indicators_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     app.ui.hide().unwrap();
 }
 
+fn run_about_address_layout(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    app.physical_width = 352;
+    app.physical_height = 240;
+    app.width = 352;
+    app.height = 240;
+    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.set_screen(Screen::About);
+    app.ui.show().unwrap();
+    let mut pixels = |label: &str| {
+        app.ui.set_about_ip(label.into());
+        let mut surface =
+            crate::surface::MemorySurface::new(352, 240, crate::surface::PixelFormat::Rgb565);
+        let mut presenter =
+            Presenter::with_rotation(surface.geometry(), PresentMode::Direct, app.screen_rotation);
+        presenter.force_repaint(&app.window);
+        app.render_once(&mut surface, &mut presenter).unwrap();
+        surface.bytes().to_vec()
+    };
+    let empty = pixels("");
+    let address = pixels("IP: 192.0.2.1");
+    let changed: Vec<_> = empty
+        .chunks_exact(352 * 2)
+        .zip(address.chunks_exact(352 * 2))
+        .enumerate()
+        .filter_map(|(y, (a, b))| (a != b).then_some(y))
+        .collect();
+    assert!(!changed.is_empty() && changed.iter().all(|&y| y < 240/4),
+        "the address belongs in the empty space above the CRT wordmark, not across its stripes: {changed:?}");
+    app.set_screen(Screen::Splash);
+    app.refresh();
+    assert!(
+        app.ui.get_about_ip().is_empty(),
+        "the startup wordmark must stay unchanged"
+    );
+    app.ui.hide().unwrap();
+}
+
 fn run_guide_setup_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("guide-settings");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -14717,6 +14755,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_connection_indicators_flow(&root, window.clone());
+    run_about_address_layout(&root, window.clone());
     run_guide_setup_flow(&root, window.clone());
     run_title_strip_scrolling_flow(&root, window.clone());
     run_additional_systems_mgl_flow(&root, window.clone());
