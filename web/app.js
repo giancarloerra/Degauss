@@ -912,8 +912,8 @@ async function settingsPage(epoch) {
   }
   $('page').append(el('div', { class: 'actions' }, button('Scraper settings', scraperSettings), button('Saved controllers', controllersEditor), button('Rebuild library', async () => { await operation('rebuild', { system: null }); await renderRoute(); }), button('Reset view selections', async () => { await edit('reset', { kind: 'view-selections' }); await renderRoute(); }), button('Unhide entries', async () => { await edit('reset', { kind: 'hidden' }); await renderRoute(); })));
 }
-async function aiGuidesPage(route, epoch) {
-  const data = await command('ai-guides');
+async function aiGuidesPage(route, epoch, statusReply) {
+  const data = statusReply ?? await command('ai-guides');
   if (epoch !== state.epoch) return;
   state.revision = data.revision;
   const page = $('page');
@@ -954,14 +954,35 @@ async function aiGuidesPage(route, epoch) {
   }
   header('Explore with AI', button('Settings', () => go('ai-guides', { setup:true })));
   if (data.busy) {
-    const stillHere = () => epoch === state.epoch && !$('editor').open;
-    const poll = () => setTimeout(() => { if (stillHere()) renderRoute(); }, 2000);
-    let timer = poll();
-    page.append(notice(data.progress || 'Reading library…'), button('Cancel', async () => {
-      clearTimeout(timer);
+    const status = notice(data.progress || 'Reading library…'), hash = location.hash;
+    let timer, generation = 0;
+    const current = id => id === generation && !!state.csrf && epoch === state.epoch && location.hash === hash;
+    const schedule = retry => { const id=generation; timer=setTimeout(() => read(id,retry),2000); };
+    const again = button('Check status', () => { again.hidden=true; return read(++generation,true); });
+    again.hidden=true;
+    async function read(id, retry) {
+      if (!current(id)) return;
+      let next;
+      try { next=await command('ai-guides'); }
+      catch (error) {
+        if (current(id)) {
+          status.textContent='Guide status unavailable: '+error.message;
+          if (retry) schedule(false); else again.hidden=false;
+        }
+        return;
+      }
+      if (!current(id)) return;
+      if (next.busy) { status.textContent=next.progress || 'Reading library…'; schedule(true); return; }
+      ++generation;
+      page.replaceChildren();
+      await aiGuidesPage(route,epoch,next);
+    }
+    page.append(status, button('Cancel', async () => {
+      const id=++generation; clearTimeout(timer); again.hidden=true;
       try { await action('ai-cancel'); }
-      catch (error) { if (stillHere()) timer = poll(); throw error; }
-    }));
+      catch (error) { if (current(id)) schedule(true); throw error; }
+    }),again);
+    schedule(true);
     return;
   }
   if (data.confirm) {

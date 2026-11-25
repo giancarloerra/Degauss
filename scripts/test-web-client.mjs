@@ -428,8 +428,8 @@ test('a completed guide save leaves a newer prompt editor and its draft open', a
 test('guide progress polling cannot hide a pending cancellation failure', async () => {
   const controls=new Map(),timers=new Map();let next=0,reject,refreshes=0;
   const ctx=vm.createContext({
-    state:{epoch:2},location:{hash:'#ai-guides'},$:(id)=>id==='editor'?{open:false}:{append(){}},
-    header(){},notice(){},button:(label,run)=>(controls.set(label,run),{}),
+    state:{epoch:2,csrf:'test'},location:{hash:'#ai-guides'},$:(id)=>id==='editor'?{open:false}:{append(){}},
+    header(){},notice:s=>({textContent:s}),button:(label,run)=>(controls.set(label,run),{}),
     renderRoute:()=>{refreshes++;},setTimeout:fn=>(timers.set(++next,fn),next),clearTimeout:id=>timers.delete(id),
     command:action=>action==='ai-guides'?Promise.resolve({enabled:true,busy:true}):new Promise((_,bad)=>{reject=bad;})
   });
@@ -438,4 +438,19 @@ test('guide progress polling cannot hide a pending cancellation failure', async 
   const cancel=controls.get('Cancel')();assert.equal(timers.size,0);
   reject(new Error('Cancellation failed'));await assert.rejects(cancel,/Cancellation failed/);
   assert.equal(refreshes,0);assert.equal(timers.size,1);
+});
+
+test('guide status failures retain Cancel, retry a read once, and never regenerate', async () => {
+  const controls=new Map(), timers=[], calls=[], line={};let seen;
+  const ctx=vm.createContext({
+    state:{epoch:1,csrf:'test'},location:{hash:'#ai-guides'},$:(id)=>id==='editor'?{open:false}:{append(...nodes){seen=nodes;}},
+    header(){},notice:s=>Object.assign(line,{textContent:s}),button:(label,run)=>{const b={label,run};controls.set(label,b);return b;},
+    setTimeout:fn=>(timers.push(fn),1),clearTimeout(){},
+    command:async name=>{calls.push(name);if(calls.length===1)return {enabled:true,busy:true};throw new Error('Service unavailable');}
+  });
+  vm.runInContext(section('async function aiGuidesPage(', '\nasync function checkCatalogue('),ctx);
+  await ctx.aiGuidesPage({},1);await timers.shift()();await timers.shift()();
+  assert.equal(timers.length,0);assert.match(line.textContent,/status unavailable.*Service unavailable/);
+  assert.ok(seen.includes(controls.get('Cancel')));assert.equal(controls.get('Check status').hidden,false);
+  assert.deepEqual(calls,['ai-guides','ai-guides','ai-guides']);
 });
