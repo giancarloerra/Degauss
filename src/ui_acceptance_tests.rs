@@ -572,14 +572,16 @@ fn run_about_address_layout(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     };
     let empty = pixels("");
     let address = pixels("IP: 192.0.2.1");
-    let changed: Vec<_> = empty
-        .chunks_exact(352 * 2)
-        .zip(address.chunks_exact(352 * 2))
-        .enumerate()
-        .filter_map(|(y, (a, b))| (a != b).then_some(y))
-        .collect();
-    assert!(!changed.is_empty() && changed.iter().all(|&y| y < 240/4),
-        "the address belongs in the empty space above the CRT wordmark, not across its stripes: {changed:?}");
+    // At 352×240 the wordmark starts 18% down the screen; each RGB565 pixel is two bytes.
+    let logo_start = (240 * 18 / 100) * 352 * 2;
+    assert!(
+        empty[..logo_start] != address[..logo_start],
+        "the address must be visible above the CRT wordmark"
+    );
+    assert!(
+        empty[logo_start..] == address[logo_start..],
+        "the address must not change the wordmark or lower rows"
+    );
     app.set_screen(Screen::Splash);
     app.refresh();
     assert!(
