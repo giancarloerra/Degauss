@@ -954,8 +954,14 @@ async function aiGuidesPage(route, epoch) {
   }
   header('Explore with AI', button('Settings', () => go('ai-guides', { setup:true })));
   if (data.busy) {
-    page.append(notice(data.progress || 'Reading library…'), button('Cancel', () => action('ai-cancel')));
-    setTimeout(() => { if (epoch === state.epoch && !$('editor').open) renderRoute(); }, 2000);
+    const stillHere = () => epoch === state.epoch && !$('editor').open;
+    const poll = () => setTimeout(() => { if (stillHere()) renderRoute(); }, 2000);
+    let timer = poll();
+    page.append(notice(data.progress || 'Reading library…'), button('Cancel', async () => {
+      clearTimeout(timer);
+      try { await action('ai-cancel'); }
+      catch (error) { if (stillHere()) timer = poll(); throw error; }
+    }));
     return;
   }
   if (data.confirm) {

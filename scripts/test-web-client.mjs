@@ -424,3 +424,18 @@ test('a completed guide save leaves a newer prompt editor and its draft open', a
   settle({saved:true});await save;
   assert.equal(editor.open,true);assert.equal(body.lastElementChild.draft,'keep my new draft');assert.equal(refreshes,0);
 });
+
+test('guide progress polling cannot hide a pending cancellation failure', async () => {
+  const controls=new Map(),timers=new Map();let next=0,reject,refreshes=0;
+  const ctx=vm.createContext({
+    state:{epoch:2},location:{hash:'#ai-guides'},$:(id)=>id==='editor'?{open:false}:{append(){}},
+    header(){},notice(){},button:(label,run)=>(controls.set(label,run),{}),
+    renderRoute:()=>{refreshes++;},setTimeout:fn=>(timers.set(++next,fn),next),clearTimeout:id=>timers.delete(id),
+    command:action=>action==='ai-guides'?Promise.resolve({enabled:true,busy:true}):new Promise((_,bad)=>{reject=bad;})
+  });
+  vm.runInContext(section('async function aiGuidesPage(', '\nasync function checkCatalogue('),ctx);
+  await ctx.aiGuidesPage({},2);assert.equal(timers.size,1);
+  const cancel=controls.get('Cancel')();assert.equal(timers.size,0);
+  reject(new Error('Cancellation failed'));await assert.rejects(cancel,/Cancellation failed/);
+  assert.equal(refreshes,0);assert.equal(timers.size,1);
+});

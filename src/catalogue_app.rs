@@ -185,13 +185,11 @@ impl App {
                 if let Some(loc) = &mut self.catalogue_update.location {
                     loc.pending.clear(); // The new revision applies at the next start.
                 }
-                self.catalogue_update.status =
-                    "Catalogue updated. Applies next time Degauss opens.".into();
-                if !ids.is_empty() {
-                    self.catalogue_update
-                        .status
-                        .push_str(" Reopen Check to rescan changed libraries.");
-                }
+                self.catalogue_update.status = if ids.is_empty() {
+                    "Catalogue updated. Applies next time Degauss opens."
+                } else {
+                    "Catalogue updated. Restart Degauss, then reopen Check to rescan changed libraries."
+                }.into();
             }
         }
         if self.catalogue_update.open {

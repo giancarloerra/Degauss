@@ -4,7 +4,7 @@
 the official repository's `catalogue-v1-<number>` tags, not the development
 branch's systems file. A newer compatible revision offers **Install** or
 **Back**. Installing affects the next Degauss start, not the currently open
-library. Reopen Check to rebuild only an affected library present on the card.
+library. After restarting Degauss, reopen Check to rebuild only an affected library present on the card.
 This does not update cores, games, MiSTer Main or Degauss itself.
 
 The packaged systems table is never overwritten. A manually edited table
