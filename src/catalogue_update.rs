@@ -55,6 +55,7 @@ struct Stored {
 }
 pub enum Check {
     Current,
+    AwaitingRestart,
     Custom,
     Incompatible(String),
     Update(Release),
@@ -95,7 +96,7 @@ impl Revision {
         if self.bytes == 0 || self.bytes > LIMIT || body.len() as u64 != self.bytes {
             return Err("catalogue byte count mismatch".into());
         }
-        if self.sha256 != digest(body) {
+        if !self.sha256.eq_ignore_ascii_case(&digest(body)) {
             return Err("catalogue SHA-256 mismatch".into());
         }
         let txt = std::str::from_utf8(body).map_err(|_| "catalogue is not UTF-8")?;
@@ -312,7 +313,11 @@ impl Location {
                 unsupported = Some(meta.min_app);
             }
         }
-        Ok(unsupported.map_or(Check::Current, Check::Incompatible))
+        Ok(match unsupported {
+            Some(version) => Check::Incompatible(version),
+            None if current > self.opened_revision => Check::AwaitingRestart,
+            None => Check::Current,
+        })
     }
     fn install(
         &self,
@@ -490,7 +495,7 @@ mod tests {
     }
     #[test]
     fn check_is_not_install_and_an_offline_restart_uses_only_a_verified_new_revision() {
-        let (d, loc) = setup("journey");
+        let (d, mut loc) = setup("journey");
         let (bytes, r) = data();
         let stop = Arc::new(AtomicBool::new(false));
         let transport = |url: &str, _: u64| -> Result<Vec<u8>> {
@@ -516,6 +521,11 @@ mod tests {
         );
         assert_eq!(std::fs::read(&loc.shipped).unwrap(), STOCK);
         assert!(loc.load().unwrap().iter().any(|s| s.id == "NewSystem"));
+        assert!(matches!(
+            loc.check(&stop, &transport),
+            Ok(Check::AwaitingRestart)
+        ));
+        loc.open().unwrap();
         assert!(matches!(loc.check(&stop, &transport), Ok(Check::Current)));
         // A user edit after installation remains authoritative on the next open.
         std::fs::write(&loc.shipped, [STOCK, b"\n# custom preference\n"].concat()).unwrap();
@@ -611,6 +621,9 @@ mod tests {
         let (d, l) = setup("failure");
         let (bytes, r) = data();
         let stop = Arc::new(AtomicBool::new(false));
+        let mut upper = r.meta.clone();
+        upper.sha256.make_ascii_uppercase();
+        assert!(upper.verify(&bytes, &l.installed).is_ok());
         for damaged in [vec![], bytes[1..].to_vec(), vec![b'x'; bytes.len()]] {
             assert!(l
                 .install(r.clone(), &stop, &|_, _| Ok(damaged.clone()))

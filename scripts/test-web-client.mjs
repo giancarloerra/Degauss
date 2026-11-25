@@ -405,3 +405,22 @@ test('a catalogue reply cannot reopen or repaint an editor that replaced it', as
   assert.equal(renders.length,2);
   assert.equal(renders.at(-1)[0],'Checking');
 });
+
+test('a completed guide save leaves a newer prompt editor and its draft open', async () => {
+  const controls=new Map(), editor={open:false}, body={lastElementChild:null};
+  let settle,submit,refreshes=0;
+  const ctx=vm.createContext({
+    state:{epoch:2},location:{protocol:'https:',hash:'#ai-guides'},
+    $:id=>id==='editor'?editor:id==='editor-body'?body:{append(){}},
+    header(){},notice(){},field(){},el:()=>({append(){}}),input:()=>({value:'fresh',required:true}),
+    select:()=>({value:'search'}),button:(label,fn)=>(controls.set(label,fn),{}),
+    formModal:(_,__,fn)=>{submit=fn;editor.open=true;body.lastElementChild={};},
+    closeModal:()=>{editor.open=false;},renderRoute:()=>{refreshes++;},
+    command:action=>action==='ai-guides'?Promise.resolve({enabled:true,builtins:[],prompts:[]}):new Promise(r=>{settle=r;})
+  });
+  vm.runInContext(section('async function aiGuidesPage(', '\nasync function checkCatalogue('),ctx);
+  await ctx.aiGuidesPage({},2); controls.get('New custom prompt')();
+  const save=submit();body.lastElementChild={draft:'keep my new draft'};
+  settle({saved:true});await save;
+  assert.equal(editor.open,true);assert.equal(body.lastElementChild.draft,'keep my new draft');assert.equal(refreshes,0);
+});

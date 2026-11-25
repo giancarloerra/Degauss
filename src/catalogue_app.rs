@@ -6,6 +6,40 @@ struct CatalogueBrowser {
     release: Option<crate::catalogue_update::Release>,
     status: String,
 }
+impl CatalogueBrowser {
+    fn record_rebuild(&mut self, id: &str) {
+        if let Some(location) = &mut self.location {
+            if let Err(e) = location.rebuilt(id) {
+                crate::note(&format!("catalogue: recording completed rescan: {e}"));
+            }
+        }
+    }
+    fn start(
+        &mut self,
+        loc: crate::catalogue_update::Location,
+        install: bool,
+    ) -> std::result::Result<(), String> {
+        let release = if install {
+            Some(
+                self.release
+                    .clone()
+                    .ok_or("Check for a revision before installing.")?,
+            )
+        } else {
+            None
+        };
+        let job = crate::catalogue_update::Job::start(loc, release)?;
+        self.release = None;
+        self.status = if install {
+            "Installing…"
+        } else {
+            "Checking GitHub…"
+        }
+        .into();
+        self.job = Some(job);
+        Ok(())
+    }
+}
 impl App {
     fn catalogue_rebuilds(&self) -> Vec<&String> {
         self.catalogue_update
@@ -45,7 +79,7 @@ impl App {
             if self.catalogue_update.job.is_some() {
                 return Err(web_error("A catalogue operation is already running."));
             }
-            let release = match command {
+            let install = match command {
                 WebCommand::CatalogueInstall { revision } => {
                     if self
                         .catalogue_update
@@ -55,21 +89,13 @@ impl App {
                     {
                         return Err(web_error("Check again before installing this revision."));
                     }
-                    self.catalogue_update.release.take()
+                    true
                 }
-                _ => {
-                    self.catalogue_update.release = None;
-                    None
-                }
+                _ => false,
             };
-            self.catalogue_update.status = if release.is_some() {
-                "Installing…"
-            } else {
-                "Checking GitHub…"
-            }
-            .into();
-            self.catalogue_update.job =
-                Some(crate::catalogue_update::Job::start(loc, release).map_err(web_error)?);
+            self.catalogue_update
+                .start(loc, install)
+                .map_err(web_error)?;
         }
         Ok(self.catalogue_web_status())
     }
@@ -111,11 +137,8 @@ impl App {
             return;
         };
         self.catalogue_update.open = true;
-        self.catalogue_update.release = None;
-        self.catalogue_update.status = "Checking GitHub…".into();
-        match crate::catalogue_update::Job::start(loc, None) {
-            Ok(j) => self.catalogue_update.job = Some(j),
-            Err(e) => self.catalogue_error(&e),
+        if let Err(e) = self.catalogue_update.start(loc, false) {
+            self.catalogue_error(&e);
         }
         self.catalogue_rows();
     }
@@ -142,6 +165,10 @@ impl App {
             Err(e) => self.catalogue_error(&e),
             Ok(O::Checked(C::Current)) => {
                 self.catalogue_update.status = "Catalogue is up to date.".into();
+            }
+            Ok(O::Checked(C::AwaitingRestart)) => {
+                self.catalogue_update.status =
+                    "Catalogue updated. Applies next time Degauss opens.".into();
             }
             Ok(O::Checked(C::Custom)) => {
                 self.catalogue_update.status = "Custom catalogue in use; no changes made.".into()
@@ -195,13 +222,8 @@ impl App {
                     .location
                     .clone()
                     .expect("checked location");
-                let release = self.catalogue_update.release.take();
-                match crate::catalogue_update::Job::start(loc, release) {
-                    Ok(job) => {
-                        self.catalogue_update.job = Some(job);
-                        self.catalogue_update.status = "Installing…".into();
-                    }
-                    Err(e) => self.catalogue_error(&e),
+                if let Err(e) = self.catalogue_update.start(loc, true) {
+                    self.catalogue_error(&e);
                 }
                 self.catalogue_rows();
             }
@@ -214,7 +236,15 @@ impl App {
                 {
                     self.catalogue_update.open = false;
                     self.open_options_page(OptionsPage::Library);
-                    self.rebuild_ordinary_system(&id);
+                    if self.pack_selected(&id) {
+                        if !self.begin_source_recovery(&id, SourceRecoveryPurpose::RefreshSystem)
+                            && self.message.is_none()
+                        {
+                            self.message = Some("The Artwork Pack rebuild could not start. Finish any current library operation and retry.".into());
+                        }
+                    } else {
+                        self.rebuild_ordinary_system(&id);
+                    }
                 }
             }
             Action::Quit | Action::Accept | Action::Menu => {

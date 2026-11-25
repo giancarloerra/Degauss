@@ -917,7 +917,17 @@ async function aiGuidesPage(route, epoch) {
   if (epoch !== state.epoch) return;
   state.revision = data.revision;
   const page = $('page');
-  const action = async (name, args = {}) => { await command(name, args); closeModal(); await renderRoute(); };
+  const action = async (name, args = {}) => {
+    const editor = $('editor'), open = !!editor.open, hash = location.hash;
+    const owner = open ? $('editor-body').lastElementChild : null;
+    const current = () => state.epoch === epoch && location.hash === hash &&
+      !!editor.open === open && (!open || $('editor-body').lastElementChild === owner);
+    try { await command(name, args); }
+    catch (error) { if (current()) throw error; return; }
+    if (!current()) return;
+    if (open) closeModal();
+    await renderRoute();
+  };
   if (route.setup || !data.enabled) {
     const provider = select([['OpenAi','OpenAI'],['Claude','Claude']], data.provider);
     const enabled = select([['off','Off'],['on','On']], data.enabled ? 'on' : 'off');

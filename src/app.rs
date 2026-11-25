@@ -8092,6 +8092,9 @@ impl App {
         for warning in &warnings {
             crate::note(warning);
         }
+        if warnings.is_empty() {
+            self.catalogue_update.record_rebuild(id);
+        }
         self.index = Some(next_index);
         self.apply_index();
         let error = (!warnings.is_empty()).then(|| warnings.join("\n"));
@@ -11630,13 +11633,7 @@ impl App {
                     }
                     if let Some(system) = system {
                         if rebuilt && warnings.is_empty() {
-                            if let Some(location) = &mut self.catalogue_update.location {
-                                if let Err(e) = location.rebuilt(&system.def.id) {
-                                    crate::note(&format!(
-                                        "catalogue: recording completed rescan: {e}"
-                                    ));
-                                }
-                            }
+                            self.catalogue_update.record_rebuild(&system.def.id);
                         }
                         if let Some(catalogue) = &mut self.explore.catalogue {
                             catalogue.signatures.remove(&system.def.id);
@@ -18686,12 +18683,8 @@ impl App {
         if self.source_recovery_warnings.is_empty()
             && self.source_recovery_storage_warnings.is_empty()
         {
-            if let Some(location) = &mut self.catalogue_update.location {
-                for staged in &staged_ids {
-                    if let Err(e) = location.rebuilt(staged) {
-                        crate::note(&format!("catalogue: recording completed rescan: {e}"));
-                    }
-                }
+            for staged in &staged_ids {
+                self.catalogue_update.record_rebuild(staged);
             }
         }
         let group = self

@@ -413,7 +413,9 @@ fn run(
     // with the build's report rather than only in the log.
     warnings.extend(catalogue_warnings(&library));
     Ok(Some(Ready {
-        rebuilt: true,
+        // Automatic Pack scans publish source-neutral rows. Source recovery
+        // prepares the selected Pack metadata and acknowledges that rebuild.
+        rebuilt: !source_neutral,
         summary: Some(summary),
         folders: cache.folders.len(),
         games: summary.games,
@@ -568,12 +570,17 @@ extensions = ["nes"]
             warnings,
             folders,
             games,
+            rebuilt,
             ..
         } = terminal(&mut job)
         else {
             panic!("expected complete cache");
         };
         assert_eq!(summary.games, 1);
+        assert!(
+            rebuilt,
+            "a newly published Gamelist index completes its catalogue rescan"
+        );
         assert_eq!(games, 1);
         assert_eq!(folders, cache.folders.len());
         assert_eq!(index.systems["Other"].games, 7);
@@ -777,11 +784,16 @@ extensions = ["nes"]
         let Event::Ready {
             summary: Some(summary),
             cache: Some(cache),
+            rebuilt,
             ..
         } = terminal(&mut job)
         else {
             panic!("the rows are read");
         };
+        assert!(
+            !rebuilt,
+            "a source-neutral scan cannot acknowledge a completed Pack rebuild"
+        );
         assert_eq!(summary.games, 1);
         assert!(
             !crate::cache::system_path(&dir, "Test").exists(),
