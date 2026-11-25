@@ -736,14 +736,18 @@ fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule>
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("img"))
     {
-        let slot = if mac_iici_floppy_image(game)? { 0 } else { 2 };
-        return system
-            .launch
-            .iter()
-            .find(|r| r.index == slot && r.extensions.iter().any(|e| e.eq_ignore_ascii_case("img")))
-            .ok_or_else(|| {
-                DegaussError::unsupported("Mac IIci image", format!("no .img rule for slot {slot}"))
+        let role = |slot| {
+            system.launch.iter().find(|r| {
+                r.index == slot && r.extensions.iter().any(|e| e.eq_ignore_ascii_case("img"))
+            })
+        };
+        if let (Some(floppy), Some(scsi)) = (role(0), role(2)) {
+            return Ok(if mac_iici_floppy_image(game)? {
+                floppy
+            } else {
+                scsi
             });
+        }
     }
     system
         .rule_for(game)
@@ -867,6 +871,18 @@ fn mac_iici_floppy_image(path: &Path) -> Result<bool> {
 fn fm8_profile_file(root: &Path) -> Result<Option<(PathBuf, Vec<u8>)>> {
     let dest = root.join("config/DegaussFM8_v4.CFG");
     let original = root.join("config/FM-7_v4.CFG");
+    match std::fs::symlink_metadata(&dest) {
+        Ok(m) if !m.is_file() => {
+            return Err(DegaussError::unsupported(
+                "FM-8 machine profile",
+                "the private profile must be a regular file; no settings were changed",
+            ));
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(DegaussError::io("checking FM-8 machine profile", &dest, e));
+        }
+        _ => {}
+    }
     let mut bytes = match std::fs::read(&dest) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::read(&original) {
@@ -1552,8 +1568,13 @@ pub fn execute(plan: &LaunchPlan, fifo: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| DegaussError::io("creating boot folder", parent, e))?;
         }
-        std::fs::write(path, contents)
-            .map_err(|e| DegaussError::io("writing boot file", path, e))?;
+        if path.ends_with("config/DegaussFM8_v4.CFG") {
+            crate::scraper::atomic_write(path, contents, "FM-8 machine profile")
+                .map_err(|e| DegaussError::unsupported("saving FM-8 machine profile", e.detail))?;
+        } else {
+            std::fs::write(path, contents)
+                .map_err(|e| DegaussError::io("writing boot file", path, e))?;
+        }
     }
 
     // A self-describing file needs no MGL written for it.
@@ -1746,6 +1767,13 @@ mod tests {
                 .boot_file
                 .is_none()
         );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&dest).unwrap();
+            std::os::unix::fs::symlink(root.join("config/FM-7_v4.CFG"), &dest).unwrap();
+            assert!(fm8_profile_file(&root).is_err());
+            assert_eq!(std::fs::read(root.join("config/FM-7_v4.CFG")).unwrap(), cfg);
+        }
         assert!(
             plan_with_selections(&fm, &tape, &mgl, &root, false, None, None)
                 .unwrap()
@@ -1782,6 +1810,13 @@ mod tests {
         set(84 + 819200 + 19200, &dc);
         assert_eq!(rule_for(&sys, &file).unwrap().index, 0);
         set(819200, b"ER");
+        let mut floppy_only = sys.clone();
+        floppy_only.launch.retain(|r| r.index == 0);
+        assert_eq!(
+            rule_for(&floppy_only, &file).unwrap().index,
+            0,
+            "a custom single IMG slot must not be overridden by the shipped dual-slot detection"
+        );
         assert_eq!(
             rule_for(&sys, &file).unwrap().index,
             2,

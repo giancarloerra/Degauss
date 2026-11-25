@@ -182,7 +182,7 @@ current revision from their editor's read response. Commands reject unknown fiel
 | --- | --- |
 | State | `state`, `systems`, `options` |
 | Explore with AI | `ai-guides` (status, prompts and last guide); `ai-setup` (`revision`, `enabled`, `provider`); `ai-key` (`revision`, `provider`, `key`, `accept_card_storage`, **HTTPS only**); `ai-prompt` (`name`, `previous?`, `text?`); `ai-generate` (`question`, `whole?`); `ai-confirm`; `ai-cancel` |
-| System catalogue | `catalogue-status` (local state only); `catalogue-check` (explicit GitHub request); `catalogue-install` (`revision`, the number offered by Check); `catalogue-cancel` |
+| System catalogue | `catalogue-status` (local state only); `catalogue-check` (explicit GitHub request); `catalogue-install` (send the offered `catalogue_revision` as `revision`); `catalogue-cancel` |
 | Connection | `web-settings`; `web-settings-save` (`revision`, `config`, `password?`); `web-certificate-renew` |
 | Library | `browse` (`system`, `folder?`, `offset?`, `limit?`, `search?`, `filters?`); `game` (`id`); `history` |
 | Explore | `explore` (`query`, `offset?`, `limit?`); `random` (`query?`, `folder?`, `favorites_only?`) |

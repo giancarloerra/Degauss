@@ -429,8 +429,8 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .systems
         .clone()
         .unwrap_or_else(|| beside_binary("systems.toml"));
-    let catalogue_location = catalogue_update::Location::new(&systems_path, &config_path);
-    let table = catalogue_location.load()?;
+    let mut catalogue_location = catalogue_update::Location::new(&systems_path, &config_path);
+    let table = catalogue_location.open()?;
     let config = Config::load_for_systems(&config_path, &table)?;
 
     let settings_path = config_path

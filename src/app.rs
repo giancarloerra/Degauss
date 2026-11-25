@@ -11600,6 +11600,7 @@ impl App {
                     index,
                     cache,
                     mut warnings,
+                    rebuilt,
                     folders,
                     games,
                     elapsed,
@@ -11628,6 +11629,15 @@ impl App {
                         }
                     }
                     if let Some(system) = system {
+                        if rebuilt && warnings.is_empty() {
+                            if let Some(location) = &mut self.catalogue_update.location {
+                                if let Err(e) = location.rebuilt(&system.def.id) {
+                                    crate::note(&format!(
+                                        "catalogue: recording completed rescan: {e}"
+                                    ));
+                                }
+                            }
+                        }
                         if let Some(catalogue) = &mut self.explore.catalogue {
                             catalogue.signatures.remove(&system.def.id);
                         }
@@ -18673,6 +18683,17 @@ impl App {
             .extend(install_warnings);
 
         let staged_ids: HashSet<String> = caches.iter().map(|staged| staged.id.clone()).collect();
+        if self.source_recovery_warnings.is_empty()
+            && self.source_recovery_storage_warnings.is_empty()
+        {
+            if let Some(location) = &mut self.catalogue_update.location {
+                for staged in &staged_ids {
+                    if let Err(e) = location.rebuilt(staged) {
+                        crate::note(&format!("catalogue: recording completed rescan: {e}"));
+                    }
+                }
+            }
+        }
         let group = self
             .source_system_id
             .as_deref()
@@ -24530,6 +24551,8 @@ impl App {
     pub fn restore_position(&mut self, saved: &crate::state::State) {
         if saved.system == AI_RESUME {
             if self.settings.ai_enabled.unwrap_or(false) && !self.kiosk_locked {
+                self.left_at = saved.left_at.clone();
+                self.category_system = saved.category_system.clone();
                 self.ai_restore_story(saved.selected);
             }
             return;

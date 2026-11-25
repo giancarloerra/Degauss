@@ -3360,8 +3360,8 @@ are embedded in the executable; the credentials file is never copied into
 `deploy/`.
 
 The repository ignores both that file and the local `screenscraper.toml`
-account file. The scraper invokes `curl` for verified HTTPS; normal browsing
-and every other feature remain in the static Rust binary.
+account file. The scraper, AI guides and manual catalogue updater use the
+card’s `curl` for HTTPS. Normal game browsing needs no provider account or internet connection.
 
 `MiSTer_Degauss` is built from its own repository, which carries the script
 that does it. That one is C++ and does need a cross-compiler.

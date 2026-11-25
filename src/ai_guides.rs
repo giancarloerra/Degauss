@@ -170,6 +170,10 @@ pub(crate) fn public_title(title: &str) -> String {
     // A manually authored metadata title may itself contain a path. Never use
     // Explore's decorated display label or send directory components.
     let mut begin = 0;
+    // Once a title has a path prefix, a spaced slash can still terminate
+    // a directory whose name contains spaces. A standalone multi-game
+    // title uses a spaced slash without any path prefix.
+    let mut path = false;
     for (at, c) in title
         .char_indices()
         .filter(|(_, c)| matches!(c, '/' | '\\'))
@@ -177,8 +181,9 @@ pub(crate) fn public_title(title: &str) -> String {
         let end = at + c.len_utf8();
         let separator = title[..at].ends_with(char::is_whitespace)
             && title[end..].starts_with(char::is_whitespace);
-        if !separator {
+        if !separator || path {
             begin = end;
+            path = true;
         }
     }
     title[begin..]
@@ -492,6 +497,12 @@ pub fn generate(
         validate(&g, &cards, &ids.iter().copied().collect())?;
         Ok(g)
     };
+    let shortlist = |ids: &[usize]| -> Result<Vec<usize>> {
+        check()?;
+        let candidates: Vec<_> = ids.iter().map(|&i| &cards[i]).collect();
+        let picks = client.ask::<Shortlist>(json!({"task":"Shortlist up to ten relevant IDs from these games. Return no IDs when none match.","brief":brief.question,"catalogue":candidates}),object(&[("ids",array(json!({"type":"integer"})))]))?;
+        checked_shortlist(picks.ids, ids)
+    };
     if brief.whole {
         let chunks = batches(&cards);
         let count = chunks.len();
@@ -502,11 +513,7 @@ pub fn generate(
             if count == 1 {
                 return write(&brief.question, &range.collect::<Vec<_>>());
             }
-            let selection:Vec<usize>=client.ask::<Shortlist>(json!({"task":"Shortlist at most ten most relevant IDs from this part of the catalogue. Return an empty list when none are relevant.","brief":brief.question,"catalogue":&cards[range.clone()]}),object(&[("ids",array(json!({"type":"integer"})))]))?.ids;
-            if selection.len() > 10 || selection.iter().any(|id| !range.contains(id)) {
-                return Err("Invalid catalogue shortlist from the provider.".into());
-            }
-            best.extend(selection);
+            best.extend(shortlist(&range.collect::<Vec<_>>())?);
         }
         if best.is_empty() {
             return Err("No games matched this guide.".into());
@@ -515,8 +522,10 @@ pub fn generate(
         while best.len() > 200 {
             let mut reduced = vec![];
             for group in best.chunks(200) {
-                let g = write(&brief.question, group)?;
-                reduced.extend(g.games.into_iter().map(|p| p.id));
+                reduced.extend(shortlist(group)?);
+            }
+            if reduced.is_empty() {
+                return Err("No games matched this guide.".into());
             }
             best = reduced;
         }
@@ -571,6 +580,17 @@ pub fn generate(
 #[derive(Deserialize)]
 struct Shortlist {
     ids: Vec<usize>,
+}
+fn checked_shortlist(picks: Vec<usize>, offered: &[usize]) -> Result<Vec<usize>> {
+    let mut seen = HashSet::new();
+    if picks.len() > 10
+        || picks
+            .iter()
+            .any(|id| !offered.contains(id) || !seen.insert(*id))
+    {
+        return Err("Invalid catalogue shortlist from the provider.".into());
+    }
+    Ok(picks)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -768,6 +788,7 @@ mod tests {
             "Metroid"
         );
         assert_eq!(public_title(r"C:\My Games\Arcade\1941"), "1941");
+        assert_eq!(public_title("/media/fat/My folder / Pac-Man"), "Pac-Man");
         assert_eq!(
             public_title("Super Mario Bros. / Duck Hunt"),
             "Super Mario Bros. / Duck Hunt"
@@ -798,6 +819,12 @@ mod tests {
         }
         let mut repeated = g(1, "1941");
         repeated.games.extend(repeated.games.clone());
+        assert!(validate(&repeated, &cards, &allowed).is_err());
+        assert!(checked_shortlist(vec![], &[0, 1]).unwrap().is_empty());
+        assert_eq!(checked_shortlist(vec![1], &[0, 1]).unwrap(), [1]);
+        assert!(checked_shortlist(vec![1, 1], &[0, 1]).is_err());
+        assert!(checked_shortlist(vec![3], &[0, 1]).is_err());
+        repeated.games.clear();
         assert!(validate(&repeated, &cards, &allowed).is_err());
     }
     #[test]

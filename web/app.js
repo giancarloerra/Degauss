@@ -973,12 +973,27 @@ async function aiGuidesPage(route, epoch) {
   }
 }
 async function checkCatalogue() {
-    let data = await command('catalogue-check');
-    const paint = () => modal('System catalogue',notice(data.status), ...(data.busy ? [button('Cancel', async () => { await command('catalogue-cancel'); closeModal(); })] :
-      [data.revision ? button('Install', async () => { data = await command('catalogue-install',{revision:data.revision}); await follow(); }, true) : null,
-       ...(data.changed || []).map(system => button('Rebuild '+system, async () => { closeModal(); await operation('rebuild',{system}); }))]));
-    const follow = async () => { paint(); while (data.busy && $('editor').open) {await new Promise(resolve => setTimeout(resolve,1000)); if (!$('editor').open) return; data = await command('catalogue-status'); paint();} };
-    await follow();
+  const body = el('div');
+  modal('System catalogue', body);
+  const ownsEditor = () => $('editor').open && body.isConnected;
+  const follow = async reply => {
+    let data = await reply;
+    while (ownsEditor()) {
+      const actions = data.busy ? [button('Cancel', async () => {
+        await command('catalogue-cancel'); if (ownsEditor()) closeModal();
+      })] : [
+        data.catalogue_revision ? button('Install', () => follow(command('catalogue-install',{revision:data.catalogue_revision})), true) : null,
+        ...(data.changed || []).map(system => button('Rebuild '+system, async () => { closeModal(); await operation('rebuild',{system}); }))
+      ];
+      body.replaceChildren(notice(data.status), ...actions.filter(Boolean));
+      if (!data.busy) return;
+      await new Promise(resolve => setTimeout(resolve,1000));
+      if (!ownsEditor()) return;
+      data = await command('catalogue-status');
+    }
+  };
+  body.replaceChildren(notice('Checking GitHub…'));
+  await follow(command('catalogue-check'));
 }
 function optionEditor(id) {
   return ({ AiGuides: () => go('ai-guides', { setup: true }), CatalogueUpdate: checkCatalogue, CustomViews: () => go('layouts'), Theme: () => go('themes'), Controllers: controllersEditor, ScraperSettings: scraperSettings, RebuildCache: () => operation('rebuild', { system: null }), ScrapeAll: () => scrapeConfirm(null, 'all systems'), ResetCustomViews: async () => { await edit('reset', { kind: 'view-selections' }); await renderRoute(); }, ResetHidden: async () => { await edit('reset', { kind: 'hidden' }); await renderRoute(); }, SwitchIni: iniProfiles, Advanced: () => document.querySelector('details[data-key=advanced]')?.setAttribute('open', ''), WebMode: webSettings, WebPort: webSettings, WebPassword: webSettings, WebAddress: webSettings, WebCertificate: webSettings })[id];

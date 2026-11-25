@@ -660,8 +660,36 @@ fn run_guide_setup_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.ai.job.is_none(),
         "Last guide must not start a provider request"
     );
+    assert!(app
+        .ai_start("Other".into(), true)
+        .unwrap_err()
+        .contains("being read on MiSTer"));
+    let mut saved = app.position();
+    saved.category_system.insert("Console".into(), "NES".into());
+    app.category_system.clear();
+    app.restore_position(&saved);
+    assert_eq!(
+        app.category_system.get("Console").map(String::as_str),
+        Some("NES")
+    );
     app.handle(Action::Quit);
     assert!(app.ai.page == Some(AiPage::Guide));
+    std::fs::write(app.ai_guide_file(), b"{").unwrap();
+    app.ai_open(AiPage::Prompts);
+    assert!(app.ai.page == Some(AiPage::Prompts));
+    assert!(app.message.take().unwrap().contains("saved guide"));
+    assert!(app.web_ai_guides().unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .contains("saved guide"));
+    app.ai.full = true;
+    app.ai_start("Whole-library guide".into(), false).unwrap();
+    // The preflight worker can queue confirmation, but Cancel must always win and
+    // must not overwrite the last saved guide, even if a terminal event is waiting.
+    app.ai_cancel();
+    app.ai_poll();
+    assert!(app.ai.page == Some(AiPage::Prompts) && app.ai.job.is_none() && app.ai.ready.is_none());
+    assert_eq!(std::fs::read(app.ai_guide_file()).unwrap(), b"{");
     app.ui.hide().unwrap();
 }
 

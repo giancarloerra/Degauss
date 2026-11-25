@@ -5,11 +5,22 @@ struct CatalogueBrowser {
     job: Option<crate::catalogue_update::Job>,
     release: Option<crate::catalogue_update::Release>,
     status: String,
-    rebuild: Vec<String>,
 }
 impl App {
+    fn catalogue_rebuilds(&self) -> Vec<&String> {
+        self.catalogue_update
+            .location
+            .iter()
+            .flat_map(|l| &l.pending)
+            .filter(|id| {
+                self.all_systems
+                    .iter()
+                    .any(|s| s.def.id == id.as_str() && !s.paths.is_empty())
+            })
+            .collect()
+    }
     fn catalogue_web_status(&self) -> JsonValue {
-        json!({"busy":self.catalogue_update.job.is_some(),"status":self.catalogue_update.status,"revision":self.catalogue_update.release.as_ref().map(|r|r.meta.revision),"changed":self.catalogue_update.rebuild})
+        json!({"busy":self.catalogue_update.job.is_some(),"status":self.catalogue_update.status,"catalogue_revision":self.catalogue_update.release.as_ref().map(|r|r.meta.revision),"changed":self.catalogue_rebuilds()})
     }
     fn catalogue_web_command(
         &mut self,
@@ -57,7 +68,6 @@ impl App {
                 "Checking GitHub…"
             }
             .into();
-            self.catalogue_update.rebuild.clear();
             self.catalogue_update.job =
                 Some(crate::catalogue_update::Job::start(loc, release).map_err(web_error)?);
         }
@@ -67,14 +77,17 @@ impl App {
         self.screen = Screen::Context;
         self.menu = if self.catalogue_update.job.is_some() {
             vec!["Cancel".into()]
-        } else if self.catalogue_update.release.is_some() {
-            vec!["Back".into(), "Install".into()]
         } else {
             std::iter::once("Back".to_string())
                 .chain(
                     self.catalogue_update
-                        .rebuild
-                        .iter()
+                        .release
+                        .as_ref()
+                        .map(|_| "Install".to_string()),
+                )
+                .chain(
+                    self.catalogue_rebuilds()
+                        .into_iter()
                         .map(|id| format!("Rebuild {id}")),
                 )
                 .collect()
@@ -99,7 +112,6 @@ impl App {
         };
         self.catalogue_update.open = true;
         self.catalogue_update.release = None;
-        self.catalogue_update.rebuild.clear();
         self.catalogue_update.status = "Checking GitHub…".into();
         match crate::catalogue_update::Job::start(loc, None) {
             Ok(j) => self.catalogue_update.job = Some(j),
@@ -130,17 +142,6 @@ impl App {
             Err(e) => self.catalogue_error(&e),
             Ok(O::Checked(C::Current)) => {
                 self.catalogue_update.status = "Catalogue is up to date.".into();
-                if let Some(loc) = &self.catalogue_update.location {
-                    match loc.changed() {
-                        Ok(ids) => {
-                            self.catalogue_update.rebuild = ids
-                                .into_iter()
-                                .filter(|id| self.all_systems.iter().any(|s| s.def.id == *id))
-                                .collect()
-                        }
-                        Err(e) => self.catalogue_error(&e),
-                    }
-                }
             }
             Ok(O::Checked(C::Custom)) => {
                 self.catalogue_update.status = "Custom catalogue in use; no changes made.".into()
@@ -154,6 +155,9 @@ impl App {
                 self.catalogue_update.release = Some(r);
             }
             Ok(O::Installed(ids)) => {
+                if let Some(loc) = &mut self.catalogue_update.location {
+                    loc.pending.clear(); // The new revision applies at the next start.
+                }
                 self.catalogue_update.status =
                     "Catalogue updated. Applies next time Degauss opens.".into();
                 if !ids.is_empty() {
@@ -201,8 +205,13 @@ impl App {
                 }
                 self.catalogue_rows();
             }
-            Action::Accept if at > 0 && !self.catalogue_update.rebuild.is_empty() => {
-                if let Some(id) = self.catalogue_update.rebuild.get(at - 1).cloned() {
+            Action::Accept if at > 0 => {
+                let offset = 1 + usize::from(self.catalogue_update.release.is_some());
+                if let Some(id) = self
+                    .catalogue_rebuilds()
+                    .get(at - offset)
+                    .map(|id| (*id).clone())
+                {
                     self.catalogue_update.open = false;
                     self.open_options_page(OptionsPage::Library);
                     self.rebuild_ordinary_system(&id);

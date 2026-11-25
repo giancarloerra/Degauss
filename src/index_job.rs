@@ -144,6 +144,7 @@ pub enum Event {
     },
     Ready {
         index: Index,
+        rebuilt: bool,
         summary: Option<Summary>,
         cache: Option<SystemCache>,
         warnings: Vec<String>,
@@ -238,6 +239,7 @@ pub fn start(request: Request) -> std::result::Result<Job, StartError> {
             let event = match result {
                 Ok(Some(ready)) => Event::Ready {
                     index: request.index,
+                    rebuilt: ready.rebuilt,
                     summary: ready.summary,
                     cache: ready.cache,
                     warnings: ready.warnings,
@@ -284,6 +286,7 @@ pub fn start(request: Request) -> std::result::Result<Job, StartError> {
 }
 
 struct Ready {
+    rebuilt: bool,
     summary: Option<Summary>,
     cache: Option<SystemCache>,
     warnings: Vec<String>,
@@ -326,6 +329,7 @@ fn run(
             request.index.systems.insert(request.id.clone(), summary);
         }
         return Ok(Some(Ready {
+            rebuilt: false,
             summary,
             folders: cached.as_ref().map_or(0, |cache| cache.folders.len()),
             games: summary.map_or(0, |summary| summary.games),
@@ -409,6 +413,7 @@ fn run(
     // with the build's report rather than only in the log.
     warnings.extend(catalogue_warnings(&library));
     Ok(Some(Ready {
+        rebuilt: true,
         summary: Some(summary),
         folders: cache.folders.len(),
         games: summary.games,

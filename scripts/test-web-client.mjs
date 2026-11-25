@@ -387,3 +387,21 @@ test('guide setup never offers key entry over HTTP; HTTPS saves only the confirm
     assert.equal(requests.at(-1).args.accept_card_storage,true);
   }
 });
+
+test('a catalogue reply cannot reopen or repaint an editor that replaced it', async () => {
+  const editor={open:true}, renders=[], commands=[];
+  let resolveReply, timer, content;
+  const ctx=vm.createContext({
+    $:()=>editor, el:()=>({isConnected:false, replaceChildren(...nodes){renders.push(nodes);}}),
+    notice:s=>s, button:(label,run)=>({label,run}), modal:(_,node)=>{content=node;node.isConnected=true;},
+    setTimeout:fn=>{timer=fn;}, command:name=>{commands.push(name);return new Promise(r=>{resolveReply=r;});}
+  });
+  vm.runInContext(section('async function checkCatalogue(', '\nfunction optionEditor('),ctx);
+  const run=ctx.checkCatalogue(); resolveReply({busy:true,status:'Checking'});
+  await new Promise(r=>setImmediate(r)); timer(); await new Promise(r=>setImmediate(r));
+  assert.deepEqual(commands,['catalogue-check','catalogue-status']);
+  content.isConnected=false;
+  resolveReply({busy:false,status:'Available',catalogue_revision:2,changed:[]}); await run;
+  assert.equal(renders.length,2);
+  assert.equal(renders.at(-1)[0],'Checking');
+});

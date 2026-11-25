@@ -71,9 +71,11 @@ impl App {
         let configured = !guides::key(self.ai_dir(), provider)
             .map_err(web_error)?
             .is_empty();
-        if enabled && self.ai.guide.is_none() {
-            self.ai.guide = guides::last_guide(&self.ai_guide_file()).map_err(web_error)?;
-        }
+        let history_error = if enabled && self.ai.guide.is_none() && self.ai.job.is_none() {
+            self.ai_read_last().err()
+        } else {
+            None
+        };
         let saved = guides::prompts(&self.ai_user_file()).map_err(web_error)?;
         // While polling a job the browser only displays progress or confirmation.
         let guide = if enabled && self.ai.job.is_none() && self.ai.ready.is_none() {
@@ -88,7 +90,7 @@ impl App {
             None
         };
         Ok(
-            json!({"enabled":enabled,"provider":provider,"configured":configured,"builtins":guides::PROMPTS,"prompts":saved,"busy":self.ai.job.is_some(),"confirm":self.ai.ready.as_ref().map(|_|self.ai_estimate()),"progress":self.ai.progress,"error":self.ai.error,"guide":guide,"revision":self.web_revision()}),
+            json!({"enabled":enabled,"provider":provider,"configured":configured,"builtins":guides::PROMPTS,"prompts":saved,"busy":self.ai.job.is_some(),"confirm":self.ai.ready.as_ref().map(|_|self.ai_estimate()),"progress":self.ai.progress,"error":self.ai.error.as_ref().or(history_error.as_ref()),"guide":guide,"revision":self.web_revision()}),
         )
     }
     fn ai_provider(&self) -> guides::Provider {
@@ -102,6 +104,11 @@ impl App {
     }
     fn ai_guide_file(&self) -> PathBuf {
         self.cache_dir.join("last-ai-guide.json")
+    }
+    fn ai_read_last(&mut self) -> std::result::Result<(), String> {
+        self.ai.guide = None;
+        self.ai.guide = guides::last_guide(&self.ai_guide_file())?;
+        Ok(())
     }
     fn ai_fail(&mut self, err: String) {
         self.message = Some(err);
@@ -131,16 +138,12 @@ impl App {
             });
             return;
         }
+        self.ai_menu(page);
         if page == AiPage::Prompts {
-            match guides::last_guide(&self.ai_guide_file()) {
-                Ok(g) => self.ai.guide = g,
-                Err(e) => {
-                    self.ai_fail(e);
-                    return;
-                }
+            if let Err(e) = self.ai_read_last() {
+                self.ai_fail(e);
             }
         }
-        self.ai_menu(page);
     }
     fn ai_menu(&mut self, page: AiPage) {
         if matches!(page, AiPage::Prompts | AiPage::Manage) {
@@ -239,11 +242,12 @@ impl App {
             .ready
             .as_ref()
             .map(|r| {
+                let requests = r.max_requests();
                 let mut summary = format!(
-                    "{} indexed games · {} KB of titles · up to {} paid requests.",
+                    "{} indexed games · {} KB of titles · up to {requests} paid request{}.",
                     r.catalogue.entries.len(),
                     r.bytes.div_ceil(1024),
-                    r.max_requests()
+                    if requests == 1 { "" } else { "s" }
                 );
                 if !r.catalogue.omitted.is_empty() {
                     summary.push_str(
@@ -301,6 +305,9 @@ impl App {
         if self.ai.job.is_some() || self.ai.ready.is_some() {
             return Err("A guide is already in progress.".into());
         }
+        if web && matches!(self.ai.page, Some(AiPage::Guide | AiPage::Story)) {
+            return Err("Close the guide being read on MiSTer before starting another.".into());
+        }
         let provider = self.ai_provider();
         let key = guides::key(self.ai_dir(), provider)?;
         if key.is_empty() {
@@ -309,9 +316,11 @@ impl App {
                 provider.label()
             ));
         }
-        if self.ai.guide.is_none() {
-            self.ai.guide = guides::last_guide(&self.ai_guide_file())?;
-        }
+        let history_error = if self.ai.guide.is_none() {
+            self.ai_read_last().err()
+        } else {
+            None
+        };
         let brief = guides::Brief {
             question,
             recent: self
@@ -330,7 +339,10 @@ impl App {
             key,
         )?);
         self.ai.web_only = web;
-        self.ai.error = None;
+        self.ai.error = history_error;
+        if let Some(e) = &self.ai.error {
+            crate::note(&format!("ai guides: {e}"));
+        }
         self.ai.progress = "Reading indexed games".into();
         if !web {
             self.ai_menu(AiPage::Working);
@@ -344,7 +356,16 @@ impl App {
             return Err("The provider key is not set.".into());
         }
         let ready = self.ai.ready.take().ok_or("No catalogue read to confirm")?;
-        self.ai.job = Some(guides::Job::confirmed(*ready, provider, key)?);
+        match guides::Job::confirmed(*ready, provider, key) {
+            Ok(job) => self.ai.job = Some(job),
+            Err(e) => {
+                if !self.ai.web_only {
+                    self.ai_menu(AiPage::Prompts);
+                }
+                self.ai.error = Some(e.clone());
+                return Err(e);
+            }
+        }
         self.ai.progress = "Reading whole catalogue".into();
         if !self.ai.web_only {
             self.ai_menu(AiPage::Working);
@@ -352,14 +373,14 @@ impl App {
         Ok(())
     }
     fn ai_cancel(&mut self) {
-        if let Some(j) = &self.ai.job {
+        if let Some(j) = self.ai.job.take() {
             j.cancel();
-            self.ai.progress = "Cancelling".into();
-        } else {
-            self.ai.ready = None;
-            if !self.ai.web_only {
-                self.ai_menu(AiPage::Prompts);
-            }
+        }
+        self.ai.ready = None;
+        self.ai.error = None;
+        self.ai.progress = "Cancelled.".into();
+        if !self.ai.web_only {
+            self.ai_menu(AiPage::Prompts);
         }
     }
     fn ai_poll(&mut self) {
@@ -597,6 +618,10 @@ impl App {
                         false,
                     )?;
                 } else if at == 1 {
+                    if self.ai.job.is_some() || self.ai.ready.is_some() {
+                        return Err("A new guide is in progress.".into());
+                    }
+                    self.ai_read_last()?;
                     if self.ai.guide.is_some() {
                         self.ai_menu(AiPage::Guide);
                     } else {

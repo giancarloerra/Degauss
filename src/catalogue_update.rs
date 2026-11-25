@@ -13,6 +13,8 @@ const PREFIX: &str = "refs/tags/catalogue-v1-";
 const RAW: &str = "https://raw.githubusercontent.com/giancarloerra/Degauss/";
 pub const BUNDLED: u64 = 2026112501;
 const LIMIT: u64 = 4 * 1024 * 1024;
+// The install worker and completed foreground rebuilds update the same record.
+static RECORD_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 type Result<T> = std::result::Result<T, String>;
 pub fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -26,6 +28,8 @@ pub struct Location {
     shipped: PathBuf,
     normal: PathBuf,
     installed: PathBuf,
+    opened_revision: u64,
+    pub pending: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +129,8 @@ impl Location {
             shipped: shipped.to_owned(),
             normal: config.with_file_name("systems.toml"),
             installed: config.with_file_name("catalogue-installed.json"),
+            opened_revision: BUNDLED,
+            pending: Vec::new(),
         }
     }
     fn stock(&self) -> Result<bool> {
@@ -153,29 +159,39 @@ impl Location {
         }
         Ok(Some(stored))
     }
-    pub fn load(&self) -> crate::error::Result<Vec<SystemDef>> {
+    fn read_active(&self) -> crate::error::Result<(Vec<SystemDef>, u64, Vec<String>)> {
         // No network; the released startup path stays intact unless there is a local update.
-        let result = (|| -> Result<Option<Vec<SystemDef>>> {
+        let result = (|| {
             let Some(stored) = self.stored()? else {
                 return Ok(None);
             };
             if !self.stock()? {
                 return Ok(None);
             }
-            stored
+            let table = stored
                 .meta
-                .verify(stored.body.as_bytes(), &self.installed)
-                .map(Some)
+                .verify(stored.body.as_bytes(), &self.installed)?;
+            Ok::<_, String>(Some((table, stored.meta.revision, stored.rescan)))
         })();
         match result {
-            Ok(Some(table)) => Ok(table),
+            Ok(Some(active)) => Ok(active),
             other => {
                 if let Err(e) = other {
                     crate::note(&format!("catalogue: using shipped table: {e}"));
                 }
-                crate::systems::load_table(&self.shipped)
+                crate::systems::load_table(&self.shipped).map(|table| (table, BUNDLED, vec![]))
             }
         }
+    }
+    pub fn open(&mut self) -> crate::error::Result<Vec<SystemDef>> {
+        let (table, revision, pending) = self.read_active()?;
+        self.opened_revision = revision;
+        self.pending = pending;
+        Ok(table)
+    }
+    #[cfg(test)]
+    fn load(&self) -> crate::error::Result<Vec<SystemDef>> {
+        self.read_active().map(|active| active.0)
     }
     fn installed_revision(&self) -> u64 {
         match self.stored().and_then(|s| {
@@ -193,7 +209,8 @@ impl Location {
             }
         }
     }
-    pub fn changed(&self) -> Result<Vec<String>> {
+    #[cfg(test)]
+    fn changed(&self) -> Result<Vec<String>> {
         let Some(s) = self.stored()? else {
             return Ok(vec![]);
         };
@@ -202,6 +219,30 @@ impl Location {
         }
         s.meta.verify(s.body.as_bytes(), &self.installed)?;
         Ok(s.rescan)
+    }
+    pub fn rebuilt(&mut self, id: &str) -> Result<()> {
+        if !self.pending.iter().any(|p| p == id) {
+            return Ok(());
+        }
+        let _writing = RECORD_WRITE
+            .lock()
+            .map_err(|_| "catalogue record lock failed")?;
+        if let Some(mut record) = self.stored()? {
+            if record.meta.revision == self.opened_revision && self.stock()? {
+                record
+                    .meta
+                    .verify(record.body.as_bytes(), &self.installed)?;
+                record.rescan.retain(|p| p != id);
+                self.save_record(&record)?;
+            }
+        }
+        self.pending.retain(|p| p != id);
+        Ok(())
+    }
+    fn save_record(&self, stored: &Stored) -> Result<()> {
+        let bytes = serde_json::to_vec(stored).map_err(|_| "cannot encode catalogue record")?;
+        crate::scraper::atomic_write(&self.installed, &bytes, "catalogue update")
+            .map_err(|e| e.detail)
     }
     fn check(
         &self,
@@ -284,8 +325,8 @@ impl Location {
         }
         let bytes = get(&format!("{RAW}{}/assets/systems.toml", r.sha), r.meta.bytes)?;
         let table = r.meta.verify(&bytes, &self.installed)?;
-        let current = self
-            .load()
+        let (current, current_revision, mut pending) = self
+            .read_active()
             .map_err(|e| format!("reading current catalogue: {e}"))?;
         let user = crate::config::Config::load_for_systems(&self.config, &current)
             .map_err(|e| format!("reading current settings: {e}"))?;
@@ -293,18 +334,27 @@ impl Location {
             .map_err(|e| format!("existing overrides would stop working: {e}"))?;
         let changed = changed(&current, &table)?;
         let body = String::from_utf8(bytes).map_err(|_| "invalid catalogue encoding")?;
-        let bytes = serde_json::to_vec(&Stored {
+        let _writing = RECORD_WRITE
+            .lock()
+            .map_err(|_| "catalogue record lock failed")?;
+        cancelled(stop)?;
+        if !self.stock()? || self.installed_revision() != current_revision {
+            return Err("local catalogue changed; not installing".into());
+        }
+        if current_revision > BUNDLED {
+            pending = self
+                .stored()?
+                .ok_or("previous catalogue disappeared")?
+                .rescan;
+        }
+        pending.extend(changed.iter().cloned());
+        pending.sort_unstable();
+        pending.dedup();
+        self.save_record(&Stored {
             meta: r.meta,
             body,
-            rescan: changed.clone(),
-        })
-        .map_err(|_| "cannot encode catalogue record")?;
-        cancelled(stop)?;
-        if !self.stock()? {
-            return Err("local systems table was edited; not installing".into());
-        }
-        crate::scraper::atomic_write(&self.installed, &bytes, "catalogue update")
-            .map_err(|e| e.detail)?;
+            rescan: pending,
+        })?;
         Ok(changed)
     }
 }
@@ -480,7 +530,7 @@ mod tests {
     }
     #[test]
     fn a_catalogue_revision_preserves_ids_overrides_and_only_offers_rescans_for_index_changes() {
-        let (d, loc) = setup("overrides");
+        let (d, mut loc) = setup("overrides");
         let (bytes, mut release) = data();
         let stop = Arc::new(AtomicBool::new(false));
         std::fs::write(
@@ -535,6 +585,20 @@ mod tests {
                 .is_empty(),
             "a label change does not need a library rebuild"
         );
+        assert_eq!(
+            loc.changed().unwrap(),
+            ["NewSystem"],
+            "a label-only revision must preserve an outstanding rescan"
+        );
+        loc.rebuilt("NewSystem").unwrap();
+        assert_eq!(
+            loc.changed().unwrap(),
+            ["NewSystem"],
+            "the still-running old table cannot clear a new revision's reminder"
+        );
+        loc.open().unwrap();
+        assert_eq!(loc.pending, ["NewSystem"]);
+        loc.rebuilt("NewSystem").unwrap();
         assert!(loc.changed().unwrap().is_empty());
         assert_eq!(
             std::fs::read_to_string(d.join("degauss-user.toml")).unwrap(),
